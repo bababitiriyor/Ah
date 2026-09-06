@@ -160,7 +160,7 @@ const ULTRA_QUESTS = [
 ];
 
 const DAILY_REWARDS = [100, 150, 220, 300, 450, 650, 1000];
-const MATCH_XP_RATE = 0.12;
+const MATCH_XP_RATE = 0.04;
 const QUEST_XP_RATE = 0.2;
 const LEVEL_REWARD_BASE_COINS = 150;
 const LEVEL_REWARD_STEP_COINS = 35;
@@ -877,7 +877,7 @@ async function handleApi(request, response, requestPath) {
   }
   if (requestPath === '/api/profile/xp' && request.method === 'POST') {
     if (!user) {
-      const gainedXp = Math.max(0, Math.min(3000, Math.round((Number(body.xp) || 0) * MATCH_XP_RATE)));
+      const gainedXp = Math.max(0, Math.min(600, Math.round((Number(body.xp) || 0) * MATCH_XP_RATE)));
       const startXP = Math.max(0, Number(body.startXP) || 0);
       const startRank = rankInfo(startXP);
       const coinsEarned = Math.max(0, Number(body.coins ?? body.gold) || 0);
@@ -888,7 +888,7 @@ async function handleApi(request, response, requestPath) {
       });
       return true;
     }
-    const gainedXp = Math.max(0, Math.min(3000, Math.round((Number(body.xp) || 0) * MATCH_XP_RATE)));
+    const gainedXp = Math.max(0, Math.min(600, Math.round((Number(body.xp) || 0) * MATCH_XP_RATE)));
     const startXP = Math.max(0, Number(user.xp) || 0);
     const previousRank = rankInfo(user.xp || 0).rankId;
     user.xp = (user.xp || 0) + gainedXp;

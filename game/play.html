@@ -4901,7 +4901,7 @@ let globalTime = 0;
 let lastRegenTime = 0;
 let _playerLevel = 1;
 let _playerLevelKills = 0;
-const XP_GAIN_RATE = 0.12;
+const XP_GAIN_RATE = 0.04;
 function scaledXpGain(value) { return Math.max(1, Math.round((Number(value) || 0) * XP_GAIN_RATE)); }
 const _LEVEL_KILLS = [0,5,12,22,36,55,80,112,150,200]; // kills needed per level
 function _checkPlayerLevel(){

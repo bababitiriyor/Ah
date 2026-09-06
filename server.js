@@ -1555,6 +1555,12 @@ function deletePlayerBuildings(playerId) {
   }
 }
 
+function onPlayerDeath(playerId) {
+  if (!playerId) return;
+  releaseTrapVictim(playerId);
+  deletePlayerBuildings(playerId);
+}
+
 function releaseTrapVictim(playerId, trapId = null) {
   const target = players.get(playerId);
   if (!target || !target.trappedBy) return false;
@@ -1594,6 +1600,25 @@ function capturePlayerInTrap(target) {
     return true;
   }
   return false;
+}
+
+function capturePlayerInSpecificTrap(target, building) {
+  if (!target || target.hp <= 0 || target.trappedBy || !building) return false;
+  if (building.type !== 6 || (building.hp ?? 0) <= 0 || building.ownerId === target.id) return false;
+  const owner = players.get(building.ownerId);
+  if (owner && ((owner.clanId && owner.clanId === target.clanId) || (owner.team && target.team && owner.team === target.team))) return false;
+  const dx = (Number(target.x) || 0) - (Number(building.x) || 0);
+  const dy = (Number(target.y) || 0) - (Number(building.y) || 0);
+  const triggerRadius = (Number(building.radius) || 78) + (Number(target.radius) || 34);
+  if (dx * dx + dy * dy > triggerRadius * triggerRadius) return false;
+  target.trappedBy = building.id;
+  target.trappedX = target.x;
+  target.trappedY = target.y;
+  target.vx = 0;
+  target.vy = 0;
+  io.to(target.id).emit('trap_caught', { buildingId: building.id, x: target.x, y: target.y });
+  io.emit('trap_triggered', { buildingId: building.id, victimId: target.id, x: target.x, y: target.y });
+  return true;
 }
 
 function pushTrappedVictim(owner, target, dx, dy, requestedStep = 1) {
@@ -1732,7 +1757,7 @@ setInterval(() => {
         });
         io.emit('players', { [target.id]: compactState(target) });
         if (target.hp <= 0) {
-          deletePlayerBuildings(target.id);
+          onPlayerDeath(target.id);
           io.to(target.id).emit('pvp_killed', { byName: mob.typeName });
           io.emit('player_dead', { id: target.id });
         }
@@ -1901,7 +1926,7 @@ setInterval(() => {
     const isDisconnected = !socket || !socket.connected;
     const isDead = (player.hp ?? 0) <= 0;
     if (isDead || (isDisconnected && (now - (player.stateAt || now) > 60000))) {
-      deletePlayerBuildings(id);
+      onPlayerDeath(id);
       players.delete(id);
       io.emit('player_dead', { id });
       io.emit('player_left', { id, name: player.name || 'Oyuncu' });
@@ -2009,7 +2034,7 @@ io.on('connection', (socket) => {
       x: Math.round((Math.random() * 2 - 1) * 3200),
       y: Math.round((Math.random() * 2 - 1) * 3200)
     };
-    deletePlayerBuildings(socket.id);
+    onPlayerDeath(socket.id);
     if (!player) {
       player = {
         id: socket.id,
@@ -2185,7 +2210,7 @@ io.on('connection', (socket) => {
       io.emit('players', { [targetId]: compactState(target) });
       socket.emit('pvp_confirm', { targetId, dmg: damage, targetName: target.name || 'Oyuncu' });
       if (target.hp <= 0) {
-        deletePlayerBuildings(targetId);
+        onPlayerDeath(targetId);
         target.kills = target.kills || 0;
         attacker.kills = (attacker.kills || 0) + 1;
         attacker.score = (attacker.score || 0) + 150;
@@ -2223,7 +2248,7 @@ io.on('connection', (socket) => {
     io.emit('players', { [data.targetId]: compactState(target) });
     socket.emit('pvp_confirm', { targetId: data.targetId, dmg: damage, targetName: target.name || 'Oyuncu' });
     if (target.hp <= 0) {
-      deletePlayerBuildings(data.targetId);
+      onPlayerDeath(data.targetId);
       target.kills = target.kills || 0;
       attacker.kills = (attacker.kills || 0) + 1;
       attacker.score = (attacker.score || 0) + 150;
@@ -2256,7 +2281,7 @@ io.on('connection', (socket) => {
     io.emit('players', { [data.targetId]: compactState(target) });
     socket.emit('spike_dmg_confirm', { targetId: data.targetId, dmg: damage, targetName: target.name || 'Oyuncu' });
     if (target.hp <= 0 && owner) {
-      deletePlayerBuildings(data.targetId);
+      onPlayerDeath(data.targetId);
       target.kills = target.kills || 0;
       owner.kills = (owner.kills || 0) + 1;
       owner.score = (owner.score || 0) + 150;
@@ -2303,21 +2328,27 @@ io.on('connection', (socket) => {
   });
 
   socket.on('trap_touch', (data = {}) => {
+    if (data.victimId && String(data.victimId) !== socket.id) return;
     const target = players.get(data.victimId);
     const building = buildings.get(String(data.buildingId || ''));
     if (!target || target.hp <= 0) return;
     if (!building || building.type !== 6 || (building.hp ?? 0) <= 0) return;
     if (building.ownerId === data.victimId) return;
     if (building.ownerId !== socket.id && data.victimId !== socket.id) return;
-    capturePlayerInTrap(target);
+    capturePlayerInSpecificTrap(target, building);
   });
 
   socket.on('mob_trap_hit', (data = {}) => {
     const mob = mobs.get(String(data.mobId || ''));
     if (!mob || mob.hp <= 0) return;
     const b = buildings.get(String(data.buildingId || ''));
+    const owner = b ? players.get(b.ownerId) : null;
+    if (!b || b.type !== 6 || (b.hp ?? 0) <= 0 || !owner || owner.hp <= 0 || owner.id !== socket.id) return;
+    const dx = mob.x - b.x, dy = mob.y - b.y;
+    const triggerRadius = (Number(b.radius) || 78) + (Number(mob.radius) || 36);
+    if (dx * dx + dy * dy > triggerRadius * triggerRadius) return;
     if (b && (b.hp ?? 100) > 0) {
-      mob.trappedBy = data.buildingId;
+      mob.trappedBy = b.id;
       mob.trappedUntil = Date.now() + 4000;
       mob.trappedX = mob.x;
       mob.trappedY = mob.y;
@@ -2325,7 +2356,7 @@ io.on('connection', (socket) => {
       mob.vy = 0;
       mob.state = 'walk';
       mob.nextAttackAt = Date.now() + 3500; // Freeze attack while trapped
-      io.emit('mob_trapped', { mobId: mob.id, buildingId: data.buildingId, x: mob.x, y: mob.y });
+      io.emit('mob_trapped', { mobId: mob.id, buildingId: b.id, x: mob.x, y: mob.y });
     }
   });
 
@@ -2374,7 +2405,7 @@ io.on('connection', (socket) => {
     if (player) {
       recordDeathScore(player.name, player.score || player.gold, player.gold, player.kills, data.timeAlive || 0);
     }
-    deletePlayerBuildings(pid);
+    onPlayerDeath(pid);
     relayToOthers(socket, 'player_dead', { id: pid });
   });
   socket.on('player_died', (data = {}) => {
@@ -2383,7 +2414,7 @@ io.on('connection', (socket) => {
     if (player) {
       recordDeathScore(player.name, player.score || player.gold, player.gold, player.kills, data.timeAlive || 0);
     }
-    deletePlayerBuildings(pid);
+    onPlayerDeath(pid);
     relayToOthers(socket, 'player_dead', { id: pid });
   });
   socket.on('eat_apple', () => {
@@ -2597,7 +2628,7 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     for (const key of mobHitCooldowns.keys()) if (key.startsWith(`${socket.id}:`)) mobHitCooldowns.delete(key);
-    deletePlayerBuildings(socket.id);
+    onPlayerDeath(socket.id);
     const player = players.get(socket.id);
     if (player && (player.score > 0 || player.gold > 0 || player.kills > 0)) {
       persistPlayerScore(player);

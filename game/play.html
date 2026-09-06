@@ -9348,9 +9348,8 @@ function respawn() {
   document.querySelectorAll('.inv-slot').forEach((s,i)=>s.classList.toggle('active',i===0));
   _respawnGrace = 60; // skip expensive background passes for ~1s to guarantee buttery respawn
   _isDying = false; // Reset dying guard on respawn so player can immediately act
-  const _rp = randomForestPoint();
-  player.x = _rp.x;
-  player.y = _rp.y;
+  // Keep the last authoritative position until the server returns own_respawn.
+  // This prevents a client-only teleport and collision pass during respawn.
   if (canvas.width > 0) {
     camX = player.x - canvas.width / 2;
     camY = player.y - canvas.height / 2;

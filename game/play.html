@@ -4893,7 +4893,7 @@ let globalTime = 0;
 let lastRegenTime = 0;
 let _playerLevel = 1;
 let _playerLevelKills = 0;
-const XP_GAIN_RATE = 0.35;
+const XP_GAIN_RATE = 0.12;
 function scaledXpGain(value) { return Math.max(1, Math.round((Number(value) || 0) * XP_GAIN_RATE)); }
 const _LEVEL_KILLS = [0,5,12,22,36,55,80,112,150,200]; // kills needed per level
 function _checkPlayerLevel(){
@@ -8973,7 +8973,7 @@ function die() {
   const _dieTimePlayed = Math.floor(globalTime / 60); // seconds alive this session
   const _xpEarned = player.kills * 60 + _dieTimePlayed * 2 + (score > 0 ? Math.floor(Math.sqrt(score) * 8) : 0);
   const _xpBeforeMatch = parseInt(localStorage.getItem('fb_user_xp') || localStorage.getItem('fb_total_xp') || '0', 10);
-  const _matchXp = Math.min(_xpEarned, 10000);
+  const _matchXp = Math.max(0, Math.round(Math.min(_xpEarned, 10000) * XP_GAIN_RATE));
   
   localStorage.setItem('fb_total_xp',   parseInt(localStorage.getItem('fb_total_xp')||'0',10)   + _matchXp);
   localStorage.setItem('fb_total_time', parseInt(localStorage.getItem('fb_total_time')||'0',10) + _dieTimePlayed);
@@ -8991,7 +8991,7 @@ function die() {
       'Authorization': _dieAuthTok ? ('Bearer ' + _dieAuthTok) : ''
     },
     body: JSON.stringify({
-      xp: _matchXp,
+      xp: Math.min(_xpEarned, 10000),
       startXP: _xpBeforeMatch,
       kills: player.kills,
       deaths: 1,

@@ -160,6 +160,10 @@ const ULTRA_QUESTS = [
 ];
 
 const DAILY_REWARDS = [100, 150, 220, 300, 450, 650, 1000];
+const MATCH_XP_RATE = 0.12;
+const QUEST_XP_RATE = 0.2;
+const LEVEL_REWARD_BASE_COINS = 150;
+const LEVEL_REWARD_STEP_COINS = 35;
 const XP_RESET_VERSION = 3;
 
 const CHEST_CONFIG = {
@@ -577,7 +581,7 @@ function recordDeathScore(name, score, gold, kills, timeAlive, userObj, updateUs
     user.games = user.gamesPlayed;
     user.timePlayed = (user.timePlayed || 0) + numTime;
     user.lastMatchAt = now;
-    const runXp = Math.max(1, Math.round((numKills * 60 + Math.min(numTime * 2, 600) + (numScore > 0 ? Math.floor(Math.sqrt(numScore) * 8) : 0)) * 0.35));
+    const runXp = Math.max(0, Math.round((numKills * 60 + Math.min(numTime * 2, 600) + (numScore > 0 ? Math.floor(Math.sqrt(numScore) * 8) : 0)) * MATCH_XP_RATE));
     user.xp = (user.xp || 0) + runXp;
     user.rankId = rankInfo(user.xp).rankId;
     saveAccountData(true);
@@ -863,7 +867,7 @@ async function handleApi(request, response, requestPath) {
   }
   if (requestPath === '/api/profile/xp' && request.method === 'POST') {
     if (!user) {
-      const gainedXp = Math.max(0, Math.min(25000, Number(body.xp) || 0));
+      const gainedXp = Math.max(0, Math.min(3000, Math.round((Number(body.xp) || 0) * MATCH_XP_RATE)));
       const startXP = Math.max(0, Number(body.startXP) || 0);
       const startRank = rankInfo(startXP);
       const coinsEarned = Math.max(0, Number(body.coins ?? body.gold) || 0);
@@ -874,7 +878,7 @@ async function handleApi(request, response, requestPath) {
       });
       return true;
     }
-    const gainedXp = Math.max(0, Math.min(25000, Number(body.xp) || 0));
+    const gainedXp = Math.max(0, Math.min(3000, Math.round((Number(body.xp) || 0) * MATCH_XP_RATE)));
     const startXP = Math.max(0, Number(user.xp) || 0);
     const previousRank = rankInfo(user.xp || 0).rankId;
     user.xp = (user.xp || 0) + gainedXp;
@@ -940,16 +944,19 @@ async function handleApi(request, response, requestPath) {
       return true;
     }
     quest.claimed = true;
-    user.coins = (user.coins || 0) + quest.rewardCoins;
-    user.gold = user.coins;
-    const earnedQuestXp = Math.max(1, Math.round(Number(quest.rewardXp || 0) * 0.35));
+    const earnedQuestXp = Math.max(1, Math.round(Number(quest.rewardXp || 0) * QUEST_XP_RATE));
+    const rewardCoins = Math.max(1, Math.round(Number(quest.rewardCoins || 0) * 1.35));
     user.xp = (user.xp || 0) + earnedQuestXp;
+    user.coins = (user.coins || 0) + rewardCoins;
+    user.gold = user.coins;
     user.rankId = rankInfo(user.xp).rankId;
     saveAccountData(true);
     sendJson(response, 200, {
       ok: true,
-      message: `${quest.title} tamamlandı! +${quest.rewardCoins} Altın ve +${earnedQuestXp} XP kazandınız!`,
+      message: `${quest.title} tamamlandı! +${rewardCoins} Altın ve +${earnedQuestXp} XP kazandınız!`,
       claimedQuestId: questId,
+      rewardCoins,
+      rewardXp: earnedQuestXp,
       dailyQuests: daily,
       user: publicUser(user)
     });
@@ -974,7 +981,7 @@ async function handleApi(request, response, requestPath) {
       sendJson(response, 409, { error: 'Bu seviye ödülü zaten alındı.', level, user: publicUser(user) });
       return true;
     }
-    const rewardCoins = 25 + (level - 1) * 5;
+    const rewardCoins = LEVEL_REWARD_BASE_COINS + (level - 1) * LEVEL_REWARD_STEP_COINS;
     user.claimedLevelRewards = [...new Set([...claimed, level])].sort((a, b) => a - b);
     user.coins = (user.coins || 0) + rewardCoins;
     user.gold = user.coins;
@@ -2414,7 +2421,7 @@ io.on('connection', (socket) => {
     const pid = socket.id;
     const player = players.get(pid);
     if (player) {
-      recordDeathScore(player.name, player.score || player.gold, player.gold, player.kills, data.timeAlive || 0);
+      recordDeathScore(player.name, player.score || player.gold, player.gold, player.kills, data.timeAlive || 0, player._authUser, false);
     }
     onPlayerDeath(pid);
     relayToOthers(socket, 'player_dead', { id: pid });
@@ -2423,7 +2430,7 @@ io.on('connection', (socket) => {
     const pid = socket.id;
     const player = players.get(pid);
     if (player) {
-      recordDeathScore(player.name, player.score || player.gold, player.gold, player.kills, data.timeAlive || 0);
+      recordDeathScore(player.name, player.score || player.gold, player.gold, player.kills, data.timeAlive || 0, player._authUser, false);
     }
     onPlayerDeath(pid);
     relayToOthers(socket, 'player_dead', { id: pid });

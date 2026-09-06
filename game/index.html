@@ -3743,7 +3743,7 @@
         ];
         const LEVEL_REWARDS = Array.from({ length: 100 }, (_, index) => {
             const [img, rewardName] = LEVEL_REWARD_ASSETS[index % LEVEL_REWARD_ASSETS.length];
-            return { img, coins: 25 + (index * 5), name: `${rewardName} · Seviye ${index + 1}` };
+            return { img, coins: 150 + (index * 35), name: `${rewardName} · Seviye ${index + 1}` };
         });
 
         async function updateLevelRewardsPanel() {
@@ -5053,6 +5053,8 @@
                         _currentUser = data.user;
                         localStorage.setItem('fb_auth_user', JSON.stringify(data.user));
                     }
+                    quest.rewardCoins = Number(data.rewardCoins ?? quest.rewardCoins);
+                    quest.rewardXp = Number(data.rewardXp ?? quest.rewardXp);
                 } catch(e) {
                     if (claimButton) claimButton.classList.remove('quest-reward-claiming');
                     triggerToast('Sunucu bağlantı hatası.', 'fa-triangle-exclamation');

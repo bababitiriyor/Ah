@@ -546,7 +546,7 @@ function readJson(request) {
   });
 }
 
-function recordDeathScore(name, score, gold, kills, timeAlive, userObj) {
+function recordDeathScore(name, score, gold, kills, timeAlive, userObj, updateUser = true) {
   const cleanName = String(name || 'forestbrawl').trim().slice(0, 20) || 'forestbrawl';
   const numScore = Math.max(0, Number(score) || 0);
   const numGold = Math.max(0, Number(gold) || 0);
@@ -555,7 +555,7 @@ function recordDeathScore(name, score, gold, kills, timeAlive, userObj) {
   const now = Date.now();
 
   const user = userObj || null;
-  if (user && user.username) {
+  if (user && user.username && updateUser) {
     user.gold = Math.max(user.gold || 0, numGold);
     user.coins = Math.max(user.coins || 0, numGold);
     user.score = Math.max(user.score || 0, numScore);
@@ -812,7 +812,7 @@ async function handleApi(request, response, requestPath) {
     const pGold = Number(body.gold || body.coins || 0);
     const pKills = Number(body.kills || 0);
     const pTime = Number(body.timeAlive || body.timePlayed || 0);
-    recordDeathScore(pName, pScore, pGold, pKills, pTime, authUser);
+    recordDeathScore(pName, pScore, pGold, pKills, pTime, authUser, false);
     sendJson(response, 200, { ok: true });
     return true;
   }
@@ -853,11 +853,18 @@ async function handleApi(request, response, requestPath) {
   if (requestPath === '/api/profile/xp' && request.method === 'POST') {
     if (!user) {
       const gainedXp = Math.max(0, Math.min(25000, Number(body.xp) || 0));
+      const startXP = Math.max(0, Number(body.startXP) || 0);
+      const startRank = rankInfo(startXP);
       const coinsEarned = Math.max(0, Number(body.coins ?? body.gold) || 0);
-      sendJson(response, 200, { ok: true, isGuest: true, gainedXp, coinsEarned });
+      sendJson(response, 200, {
+        ok: true, isGuest: true, gainedXp, coinsEarned,
+        currentLevel: startRank.level, startXP, gainedXP: gainedXp,
+        maxXPForCurrentLevel: Math.max(0, startRank.nextMinXP - startRank.minXP),
+      });
       return true;
     }
     const gainedXp = Math.max(0, Math.min(25000, Number(body.xp) || 0));
+    const startXP = Math.max(0, Number(user.xp) || 0);
     const previousRank = rankInfo(user.xp || 0).rankId;
     user.xp = (user.xp || 0) + gainedXp;
     user.kills = (user.kills || 0) + Math.max(0, Number(body.kills) || 0);
@@ -882,7 +889,11 @@ async function handleApi(request, response, requestPath) {
       xpGained: gainedXp,
       rankUp: currentRank.rankId > previousRank,
       newRankName: currentRank.name,
-      newRankIcon: currentRank.icon
+      newRankIcon: currentRank.icon,
+      currentLevel: previousRank + 1,
+      startXP,
+      gainedXP: gainedXp,
+      maxXPForCurrentLevel: Math.max(0, rankInfo(startXP).nextMinXP - rankInfo(startXP).minXP),
     });
     return true;
   }
@@ -1209,6 +1220,7 @@ function compactMobTick(mob) {
   return {
     id: mob.id,
     seq: mob.stateSeq || 0,
+    ts: mob.stateAt || Date.now(),
     x: Math.round(mob.x),
     y: Math.round(mob.y),
     vx: Math.round((mob.vx || 0) * 10) / 10,
@@ -1263,16 +1275,68 @@ function relayToOthers(socket, event, payload) {
   socket.broadcast.emit(event, payload);
 }
 
-function broadcastMobStates(changed) {
-  io.volatile.emit('mob_states', changed);
-}
-
 const MAX_MOBS = 32;
 const MOB_RADIUS = 36;
 const MOB_AGGRO_RANGE = 420;
 const MOB_SPEED = 24;
 const MOB_WANDER_SPEED = 12;
 const MOB_CHASE_TIMEOUT = 6000;
+const MOB_GRID_CELL_SIZE = 300;
+const MOB_AOI_RADIUS = 1200;
+const mobGrid = new Map();
+
+function mobCellKey(x, y) {
+  return `${Math.floor(x / MOB_GRID_CELL_SIZE)},${Math.floor(y / MOB_GRID_CELL_SIZE)}`;
+}
+
+function rebuildMobGrid() {
+  mobGrid.clear();
+  for (const mob of mobs.values()) {
+    const key = mobCellKey(mob.x, mob.y);
+    const bucket = mobGrid.get(key);
+    if (bucket) bucket.push(mob);
+    else mobGrid.set(key, [mob]);
+  }
+}
+
+function nearbyMobs(x, y, radius) {
+  const minCellX = Math.floor((x - radius) / MOB_GRID_CELL_SIZE);
+  const maxCellX = Math.floor((x + radius) / MOB_GRID_CELL_SIZE);
+  const minCellY = Math.floor((y - radius) / MOB_GRID_CELL_SIZE);
+  const maxCellY = Math.floor((y + radius) / MOB_GRID_CELL_SIZE);
+  const result = [];
+  const radiusSquared = radius * radius;
+  for (let cellX = minCellX; cellX <= maxCellX; cellX++) {
+    for (let cellY = minCellY; cellY <= maxCellY; cellY++) {
+      const bucket = mobGrid.get(`${cellX},${cellY}`);
+      if (!bucket) continue;
+      for (const mob of bucket) {
+        const dx = mob.x - x, dy = mob.y - y;
+        if (dx * dx + dy * dy <= radiusSquared) result.push(mob);
+      }
+    }
+  }
+  return result;
+}
+
+function syncMobVisibility(changed = []) {
+  rebuildMobGrid();
+  for (const [id, player] of players) {
+    const socket = io.sockets.sockets.get(id);
+    if (!socket || !player.visibleMobIds) continue;
+    const visibleMobs = nearbyMobs(player.x, player.y, MOB_AOI_RADIUS);
+    const nextIds = new Set(visibleMobs.map(mob => mob.id));
+    for (const mob of visibleMobs) {
+      if (!player.visibleMobIds.has(mob.id)) socket.emit('mob_spawn', publicMob(mob));
+    }
+    for (const mobId of player.visibleMobIds) {
+      if (!nextIds.has(mobId)) socket.emit('mob_despawn', { id: mobId, ts: Date.now() });
+    }
+    player.visibleMobIds = nextIds;
+    const visibleChanged = changed.filter(mob => nextIds.has(mob.id));
+    if (visibleChanged.length) socket.volatile.emit('mob_states', visibleChanged);
+  }
+}
 
 function _makeMulberry32(seed) {
   return function() {
@@ -1325,6 +1389,7 @@ function publicMob(mob) {
     id: mob.id, x: Math.round(mob.x), y: Math.round(mob.y), vx: Math.round(mob.vx * 10) / 10,
     vy: Math.round(mob.vy * 10) / 10, angle: mob.angle !== undefined ? Math.round(mob.angle * 100) / 100 : 0,
     seq: mob.stateSeq || 0,
+    ts: mob.stateAt || Date.now(),
     hp: mob.hp, maxHp: mob.maxHp, radius: mob.radius,
     color: mob.color, outline: mob.outline, shape: mob.shape, eyes: mob.eyes,
     typeName: mob.typeName, dmg: mob.dmg, xpReward: mob.xpReward, goldReward: mob.goldReward,
@@ -1397,7 +1462,7 @@ function createMob() {
     eyes: type.eyes, typeName: type.typeName, dmg: type.dmg,
     speed: type.speed || MOB_SPEED, wanderSpeed: type.wanderSpeed || MOB_WANDER_SPEED,
     xpReward: type.xpReward || 35, goldReward: type.goldReward || 15,
-    nextAttackAt: 0, wanderAngle: angle, angle, targetId: null, chaseUntil: 0, state: 'walk', stateSeq: 0,
+    nextAttackAt: 0, wanderAngle: angle, angle, targetId: null, chaseUntil: 0, state: 'walk', stateSeq: 0, stateAt: Date.now(),
   };
   mobs.set(mob.id, mob);
   io.emit('mob_spawn', publicMob(mob));
@@ -1411,15 +1476,23 @@ function ensureMobs() {
 function applyMobDamage(mob, target, damage, isWeb = false) {
   if (!mob || !target || target.hp <= 0) return null;
   const appliedDamage = Math.max(1, Math.round(Number(damage) || 1));
-  target.hp = Math.max(0, (target.hp ?? 250) - appliedDamage);
-  target.hpSeq = (target.hpSeq || 0) + 1;
+  applyPlayerDamage(target, appliedDamage);
+  const hpAt = target.hpAt;
+  const hpSeq = target.hpSeq;
   const payload = {
-    id: target.id, hp: target.hp, dmg: appliedDamage, hpSeq: target.hpSeq,
+    id: target.id, hp: target.hp, dmg: appliedDamage, hpSeq, hpAt,
     sourceId: mob.id, sourceName: mob.typeName || 'Düşman', isWeb: Boolean(isWeb),
   };
   io.to(target.id).emit('player_take_damage', payload);
-  io.to(target.id).emit('self_state', { hp: target.hp, hpSeq: target.hpSeq });
+  io.to(target.id).emit('self_state', { hp: target.hp, hpSeq, hpAt });
   return payload;
+}
+
+function applyPlayerDamage(target, damage) {
+  target.hp = Math.max(0, (target.hp ?? 250) - Math.max(1, Math.round(Number(damage) || 1)));
+  target.hpSeq = (target.hpSeq || 0) + 1;
+  target.hpAt = Date.now();
+  return target;
 }
 
 function publicAirdrop(ad) {
@@ -1567,11 +1640,14 @@ function resolveTrapOwnerCollisions(owner) {
 }
 
 function broadcastMobIds() {
-  if (players.size > 0) {
-    io.emit('mob_ids', [...mobs.keys()]);
-    // IDs alone cannot reconstruct a mob after a missed spawn packet. Send a
-    // periodic authoritative snapshot so reconnects and respawns converge.
-    io.emit('mob_states', [...mobs.values()].map(publicMob));
+  rebuildMobGrid();
+  for (const [id, player] of players) {
+    const socket = io.sockets.sockets.get(id);
+    if (!socket) continue;
+    const visibleMobs = nearbyMobs(player.x, player.y, MOB_AOI_RADIUS);
+    player.visibleMobIds = new Set(visibleMobs.map(mob => mob.id));
+    socket.emit('mob_ids', [...player.visibleMobIds]);
+    socket.emit('mob_states', visibleMobs.map(publicMob));
   }
 }
 
@@ -1584,6 +1660,7 @@ setInterval(() => {
   const now = Date.now();
   for (const mob of mobs.values()) {
     mob.stateSeq = (mob.stateSeq || 0) + 1;
+    mob.stateAt = now;
     if (mob.trappedBy) {
       const b = buildings.get(mob.trappedBy);
       if (b && (b.hp ?? 100) > 0 && now < (mob.trappedUntil || 0)) {
@@ -1601,6 +1678,7 @@ setInterval(() => {
     }
 
     let target = mob.targetId ? players.get(mob.targetId) : null;
+    if (target && !target.visibleMobIds?.has(mob.id)) target = null;
     if (!target || (target.hp ?? 0) <= 0) {
       mob.targetId = null;
       target = null;
@@ -1609,6 +1687,7 @@ setInterval(() => {
       let nearestDistance = MOB_AGGRO_RANGE * MOB_AGGRO_RANGE;
       for (const candidate of players.values()) {
         if ((candidate.hp ?? 0) <= 0) continue;
+        if (!candidate.visibleMobIds?.has(mob.id)) continue;
         const dx = candidate.x - mob.x, dy = candidate.y - mob.y;
         const distance = dx * dx + dy * dy;
         if (distance < nearestDistance) { target = candidate; nearestDistance = distance; }
@@ -1637,7 +1716,7 @@ setInterval(() => {
         io.emit('mob_attack', {
           id: mob.id, targetId: target.id, dmg: webDmg, hp: webDamage?.hp, hpSeq: webDamage?.hpSeq,
           typeName: mob.typeName, shape: mob.shape, isWeb: true,
-          x: mob.x, y: mob.y, angle: mob.angle, targetX: target.x, targetY: target.y, seq: mob.stateSeq
+          x: mob.x, y: mob.y, angle: mob.angle, targetX: target.x, targetY: target.y, seq: mob.stateSeq, ts: mob.stateAt
         });
       }
       // Melee attack for all mobs
@@ -1649,7 +1728,7 @@ setInterval(() => {
         io.emit('mob_attack', {
           id: mob.id, targetId: target.id, dmg: mob.dmg, hp: meleeDamage?.hp, hpSeq: meleeDamage?.hpSeq,
           typeName: mob.typeName, shape: mob.shape,
-          x: mob.x, y: mob.y, angle: mob.angle, targetX: target.x, targetY: target.y, seq: mob.stateSeq
+          x: mob.x, y: mob.y, angle: mob.angle, targetX: target.x, targetY: target.y, seq: mob.stateSeq, ts: mob.stateAt
         });
         io.emit('players', { [target.id]: compactState(target) });
         if (target.hp <= 0) {
@@ -1724,7 +1803,7 @@ setInterval(() => {
           const spikeDmg = [45, 75, 110, 160, 220, 300][spikeTier] || 45;
           mob.hp = Math.max(0, mob.hp - spikeDmg);
           mob.stateSeq = (mob.stateSeq || 0) + 1;
-          io.emit('mob_update', { id: mob.id, seq: mob.stateSeq, hp: mob.hp, maxHp: mob.maxHp, hitFlash: 8 });
+          io.emit('mob_update', { id: mob.id, seq: mob.stateSeq, ts: mob.stateAt, hp: mob.hp, maxHp: mob.maxHp, hitFlash: 8 });
           if (mob.hp <= 0) {
             mobs.delete(mob.id);
             const ownerId = b.ownerId || b._ownerId;
@@ -1747,7 +1826,7 @@ setInterval(() => {
 
     changed.push(compactMobTick(mob));
   }
-  if (changed.length) broadcastMobStates(changed);
+  syncMobVisibility(changed);
 }, 100);
 
 // 30Hz Server Game Tick: Batches all living player states into ONE ultra-compact broadcast packet (eliminates packet flood & buffer bloat)
@@ -1772,7 +1851,7 @@ setInterval(() => {
     if (!p || (p.hp ?? 0) <= 0) continue;
     const s = io.sockets.sockets.get(id);
     if (s && s.connected) {
-      s.emit('self_state', { x: p.x, y: p.y, hp: p.hp, hpSeq: p.hpSeq || 0, sc: p.score, g: p.gold, seq: p.stateSeq || 0 });
+      s.emit('self_state', { x: p.x, y: p.y, hp: p.hp, hpSeq: p.hpSeq || 0, hpAt: p.hpAt || 0, sc: p.score, g: p.gold, seq: p.stateSeq || 0 });
     }
   }
 }, 1000);
@@ -1871,6 +1950,7 @@ io.on('connection', (socket) => {
       rankName: playerRank.name,
       hp: data.hp ?? 250,
       maxHp: data.maxHp ?? 250,
+      hpSeq: 0,
       gold: initialGold,
       xp: initialXp,
       score: initialScore,
@@ -1886,6 +1966,9 @@ io.on('connection', (socket) => {
         effectId: authUser.equippedItems.profil_efekt || authUser.equippedItems.efektler || 'effect_none',
         frameId: authUser.equippedItems.profil_cerceve || 'frame_woodland'
       } : (data.profileCosmetics || null),
+      visibleMobIds: new Set(),
+      hpAt: Date.now(),
+      stateAt: Date.now(),
       _authUser: authUser
     };
     const requestedClan = clans.get(String(data.clanId || ''));
@@ -1899,6 +1982,9 @@ io.on('connection', (socket) => {
     }
     players.set(socket.id, state);
     ensureMobs(state.x || 0, state.y || 0);
+    rebuildMobGrid();
+    const visibleMobs = nearbyMobs(state.x || 0, state.y || 0, MOB_AOI_RADIUS);
+    state.visibleMobIds = new Set(visibleMobs.map(mob => mob.id));
     const others = Object.fromEntries([...players].filter(([id]) => id !== socket.id).map(([id, player]) => [id, compactFullState(player)]));
     socket.emit('welcome', {
       id: socket.id,
@@ -1906,12 +1992,12 @@ io.on('connection', (socket) => {
       buildings: Object.fromEntries(buildings),
       worldSeed,
       resHp: {},
-      mobs: [...mobs.values()].map(publicMob),
+      mobs: visibleMobs.map(publicMob),
       airdrops: [...airdrops.values()].map(publicAirdrop),
       bountyId: currentBountyId,
       isHost: players.size === 1
     });
-    socket.emit('mob_ids', [...mobs.keys()]);
+    socket.emit('mob_ids', [...state.visibleMobIds]);
     socket.broadcast.emit('player_join', { id: socket.id, state: compactFullState(state) });
     broadcastOnlineCount();
     updateBounty();
@@ -1957,10 +2043,12 @@ io.on('connection', (socket) => {
       player.trappedBy = null;
       player.stateSeq = 0;
       player.hpSeq = 0;
+      player.hpAt = Date.now();
+      player.visibleMobIds = new Set();
       player.stateAt = Date.now();
     }
     socket.emit('own_respawn', { x: spawnPt.x, y: spawnPt.y });
-    socket.emit('self_state', { x: spawnPt.x, y: spawnPt.y, hp: player.hp, hpSeq: 0, sc: player.score, g: player.gold, seq: 0 });
+    socket.emit('self_state', { x: spawnPt.x, y: spawnPt.y, hp: player.hp, hpSeq: 0, hpAt: player.hpAt, sc: player.score, g: player.gold, seq: 0 });
     io.emit('player_respawn', { id: socket.id, state: compactFullState(player) });
     broadcastOnlineCount();
   });
@@ -2091,9 +2179,9 @@ io.on('connection', (socket) => {
       let difference = Math.abs(Math.atan2(dy, dx) - angle);
       if (difference > Math.PI) difference = Math.PI * 2 - difference;
       if (difference > spread) continue;
-      target.hp = Math.max(0, (target.hp ?? 250) - damage);
+      applyPlayerDamage(target, damage);
       io.to(targetId).emit('pvp_hit', { dmg: damage, fromName: attacker.name || 'Oyuncu' });
-      io.to(targetId).emit('self_state', { hp: target.hp });
+      io.to(targetId).emit('self_state', { hp: target.hp, hpSeq: target.hpSeq, hpAt: target.hpAt });
       io.emit('players', { [targetId]: compactState(target) });
       socket.emit('pvp_confirm', { targetId, dmg: damage, targetName: target.name || 'Oyuncu' });
       if (target.hp <= 0) {
@@ -2129,9 +2217,9 @@ io.on('connection', (socket) => {
     if (distance > 950) return;
     const tier = Math.max(0, Math.min(5, Number(data.tier) || Number(attacker.axeTier) || 0));
     const damage = Math.min(140, Math.max(1, Math.round((14 + tier * 6) * (Number(attacker.damageMultiplier) || 1))));
-    target.hp = Math.max(0, (target.hp ?? 250) - damage);
+    applyPlayerDamage(target, damage);
     io.to(data.targetId).emit('pvp_hit', { dmg: damage, fromName: attacker.name || 'Oyuncu' });
-    io.to(data.targetId).emit('self_state', { hp: target.hp });
+    io.to(data.targetId).emit('self_state', { hp: target.hp, hpSeq: target.hpSeq, hpAt: target.hpAt });
     io.emit('players', { [data.targetId]: compactState(target) });
     socket.emit('pvp_confirm', { targetId: data.targetId, dmg: damage, targetName: target.name || 'Oyuncu' });
     if (target.hp <= 0) {
@@ -2162,9 +2250,9 @@ io.on('connection', (socket) => {
     if (!target || target.hp <= 0) return;
     if (owner && ((owner.clanId && owner.clanId === target.clanId) || (owner.team && target.team && owner.team === target.team))) return;
     const damage = Math.max(1, Math.min(180, Number(data.dmg) || 60));
-    target.hp = Math.max(0, (target.hp ?? 250) - damage);
+    applyPlayerDamage(target, damage);
     io.to(data.targetId).emit('pvp_hit', { dmg: damage, fromName: owner?.name || 'Diken' });
-    io.to(data.targetId).emit('self_state', { hp: target.hp });
+    io.to(data.targetId).emit('self_state', { hp: target.hp, hpSeq: target.hpSeq, hpAt: target.hpAt });
     io.emit('players', { [data.targetId]: compactState(target) });
     socket.emit('spike_dmg_confirm', { targetId: data.targetId, dmg: damage, targetName: target.name || 'Oyuncu' });
     if (target.hp <= 0 && owner) {
@@ -2300,8 +2388,12 @@ io.on('connection', (socket) => {
   });
   socket.on('eat_apple', () => {
     const player = players.get(socket.id);
-    if (player) player.hp = Math.min(player.maxHp ?? 250, (player.hp ?? 0) + 30);
-    socket.emit('self_state', { hp: player?.hp ?? 250 });
+    if (player) {
+      player.hp = Math.min(player.maxHp ?? 250, (player.hp ?? 0) + 30);
+      player.hpSeq = (player.hpSeq || 0) + 1;
+      player.hpAt = Date.now();
+    }
+    socket.emit('self_state', { hp: player?.hp ?? 250, hpSeq: player?.hpSeq || 0, hpAt: player?.hpAt || Date.now() });
   });
 
   socket.on('mob_hit_req', (data = {}) => {

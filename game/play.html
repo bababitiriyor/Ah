@@ -1670,9 +1670,9 @@ html.touch-device .joy-zone { display:flex !important; pointer-events:auto !impo
 #death-xp-change b{color:#ffe36d;}
 #death-xp-caption{margin-top:6px;color:rgba(255,255,255,.58);font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;}
 #death-rank-bar{display:block !important;width:100% !important;background:rgba(4,12,8,.56) !important;border:1px solid rgba(255,215,0,.28) !important;border-radius:10px !important;padding:10px !important;box-shadow:none !important;}
-#death-rank-fill{box-shadow:0 0 10px rgba(255,190,45,.55);}
+#death-rank-fill{box-shadow:0 0 8px rgba(34,145,105,.45);}
 #death-rank-track{position:relative;height:clamp(8px,1.5vh,12px);background:#1A0F08;border:1.5px solid #1F1108;border-radius:10px;overflow:hidden;}
-#death-rank-fill{position:absolute;inset:0 auto 0 0;width:0;background:linear-gradient(90deg,#ffd700,#ff8c00);border-radius:10px;transition:width 1.6s cubic-bezier(.25,.46,.45,.94);z-index:1;}
+#death-rank-fill{position:absolute;inset:0 auto 0 0;width:0;background:linear-gradient(90deg,#0b5d52,#167c68);border-radius:10px;transition:width 1.6s cubic-bezier(.25,.46,.45,.94);z-index:1;}
 #death-rank-gain{position:absolute;top:0;bottom:0;left:0;width:0;background:linear-gradient(90deg,#8df05b,#23c96b);border-radius:0 10px 10px 0;box-shadow:0 0 12px rgba(87,235,105,.8);transition:left .25s ease,width 1.6s cubic-bezier(.25,.46,.45,.94);z-index:2;}
 #death-rank-track::after{content:'MEVCUT XP  /  BU MAÇ XP';position:absolute;right:5px;top:50%;transform:translateY(-50%);z-index:3;color:rgba(255,255,255,.7);font:900 7px/1 'Nunito',sans-serif;letter-spacing:.3px;pointer-events:none;}
 #death-footer{gap:8px;margin-top:4px;}
@@ -8992,6 +8992,7 @@ function die() {
     },
     body: JSON.stringify({
       xp: _matchXp,
+      startXP: _xpBeforeMatch,
       kills: player.kills,
       deaths: 1,
       score,
@@ -9134,15 +9135,101 @@ function die() {
     }
     _rbEl.style.display = '';
     _rfEl.style.width = _oldPct + '%';
-    setTimeout(() => { _rfEl.style.width = _pct + '%'; }, 180);
+    animateXPBar(_xpBeforeMatch, _sessXP, _re - _rs, _oldRid + 1);
   })();
+}
+
+let _xpBarAnimationId = 0;
+
+function animateXPBar(startXP, gainedXP, maxXPForCurrentLevel, level) {
+  const animationId = ++_xpBarAnimationId;
+  const start = Math.max(0, Number(startXP) || 0);
+  const earned = Math.max(0, Number(gainedXP) || 0);
+  const duration = 1800;
+  const fillEl = document.getElementById('death-rank-fill');
+  const gainEl = document.getElementById('death-rank-gain');
+  const labelEl = document.getElementById('death-rank-label');
+  const earnedEl = document.getElementById('death-xp-earned');
+  const totalEl = document.getElementById('death-xp-total');
+  const changeEl = document.getElementById('death-xp-change');
+  if (!fillEl || !gainEl) return;
+  const rankCount = _FB_RANK_XP.length;
+  const initialLevel = Math.max(1, Math.min(rankCount, _fbRankByXP(start) + 1 || Number(level) || 1));
+  const ease = value => 1 - Math.pow(1 - value, 3);
+  const levelBounds = rank => {
+    const index = Math.max(0, Math.min(rankCount - 1, rank - 1));
+    const min = Number(_FB_RANK_XP[index]) || 0;
+    const next = index >= rankCount - 1 ? min : Number(_FB_RANK_XP[index + 1]);
+    return { min, next: Math.max(min, next), span: Math.max(1, next - min) };
+  };
+  const initialBounds = levelBounds(initialLevel);
+  const target = start + earned;
+  const segments = [];
+  let segmentStart = start;
+  let segmentLevel = initialLevel;
+  while (segmentLevel < rankCount && segmentStart < target) {
+    const bounds = levelBounds(segmentLevel);
+    const segmentEnd = Math.min(target, bounds.next);
+    segments.push({ level: segmentLevel, start: segmentStart, end: segmentEnd, span: Math.max(0, segmentEnd - segmentStart) });
+    segmentStart = segmentEnd;
+    segmentLevel++;
+  }
+  if (!segments.length) segments.push({ level: initialLevel, start, end: start, span: 0 });
+  const pauseDuration = 220;
+  const activeDuration = Math.max(1, duration - Math.max(0, segments.length - 1) * pauseDuration);
+  const segmentDuration = activeDuration / segments.length;
+  const render = (segment, absoluteXP, earnedInSegment, levelUpUntil, now) => {
+    const bounds = levelBounds(segment.level);
+    const baseProgress = segment.level === initialLevel
+      ? Math.max(0, Math.min(100, ((start - initialBounds.min) / initialBounds.span) * 100)) : 0;
+    const currentProgress = segment.level >= rankCount ? 100 : Math.max(0, Math.min(100, ((absoluteXP - bounds.min) / bounds.span) * 100));
+    const earnedProgress = segment.level === initialLevel
+      ? Math.max(0, currentProgress - baseProgress) : currentProgress;
+    fillEl.style.width = baseProgress + '%';
+    gainEl.style.left = baseProgress + '%';
+    gainEl.style.width = Math.min(100 - baseProgress, earnedProgress) + '%';
+    if (labelEl) {
+      const meta = _RANK_META[Math.min(segment.level - 1, _RANK_META.length - 1)];
+      labelEl.innerHTML = `<span style="color:${meta[4]}">${_FB_RANK_EMOJIS[Math.min(segment.level - 1, _FB_RANK_EMOJIS.length - 1)]} Lv.${segment.level} ${meta[5]}</span>`;
+    }
+    const counted = Math.round(earned * Math.min(1, Math.max(0, (absoluteXP - start) / Math.max(1, earned))));
+    if (earnedEl) earnedEl.textContent = '+' + counted.toLocaleString('tr-TR') + ' XP';
+    if (totalEl) totalEl.textContent = 'Toplam XP: ' + Math.round(absoluteXP).toLocaleString('tr-TR');
+    if (changeEl) changeEl.innerHTML = now < levelUpUntil
+      ? '<b>LEVEL UP!</b>'
+      : `<b>+${counted.toLocaleString('tr-TR')} XP</b> bu maç`;
+  };
+  fillEl.style.transition = 'none';
+  gainEl.style.transition = 'none';
+  const startedAt = performance.now();
+  const frame = now => {
+    if (animationId !== _xpBarAnimationId || !document.getElementById('death-overlay')?.classList.contains('show')) return;
+    const elapsed = now - startedAt;
+    let segmentIndex = Math.min(segments.length - 1, Math.floor(elapsed / (segmentDuration + pauseDuration)));
+    let segmentElapsed = elapsed - segmentIndex * (segmentDuration + pauseDuration);
+    const segment = segments[segmentIndex];
+    const atBoundary = segmentIndex < segments.length - 1 && segmentElapsed >= segmentDuration;
+    if (atBoundary) {
+      segmentElapsed = segmentDuration;
+      render(segment, segment.end, segment.span, now + pauseDuration, now);
+    } else {
+      const progress = Math.min(1, Math.max(0, segmentElapsed / segmentDuration));
+      const segmentXP = segment.start + segment.span * ease(progress);
+      render(segment, segmentXP, segment.span, 0, now);
+    }
+    if (elapsed < duration + Math.max(0, segments.length - 1) * pauseDuration) requestAnimationFrame(frame);
+    else render(segments[segments.length - 1], target, segments[segments.length - 1].span, 0, now);
+  };
+  render(segments[0], start, 0, 0, startedAt);
+  requestAnimationFrame(frame);
 }
 
 function _updateRankBarFromServer(d) {
   if (!d || d.newXp === undefined) return;
+  if (!document.getElementById('death-overlay')?.classList.contains('show')) return;
   const totalXP = d.newXp;
-  const gainedXP = Math.max(0, Number(d.xpGained || 0));
-  const previousXP = Math.max(0, totalXP - gainedXP);
+  const gainedXP = Math.max(0, Number(d.gainedXP ?? d.xpGained ?? 0));
+  const previousXP = Math.max(0, Number(d.startXP ?? (totalXP - gainedXP)));
   const rid     = _fbRankByXP(totalXP);
   const oldRid  = _fbRankByXP(previousXP);
   const rm      = _RANK_META[rid];
@@ -9158,7 +9245,7 @@ function _updateRankBarFromServer(d) {
   const rfEl    = document.getElementById('death-rank-fill');
   const rtEl    = document.getElementById('death-rank-xp');
   if (rlEl) rlEl.innerHTML = `<span style="color:${oldRm[4]}">${oldRm[5]}</span><span style="color:rgba(255,255,255,0.35);padding:0 5px">→</span><span style="color:${rm[4]}">${rm[5]}</span>`;
-  if (rfEl) { rfEl.style.transition='none'; rfEl.style.width = oldPct + '%'; requestAnimationFrame(function(){ rfEl.style.transition='width 1.8s cubic-bezier(.25,.46,.45,.94)'; rfEl.style.width = pct + '%'; }); }
+  animateXPBar(previousXP, gainedXP, Number(d.maxXPForCurrentLevel) || (oldRe - oldRs), d.currentLevel || oldRid + 1);
   const totalEl = document.getElementById('death-xp-total');
   const changeEl = document.getElementById('death-xp-change');
   if (totalEl) totalEl.textContent = `Toplam XP: ${totalXP.toLocaleString('tr-TR')}`;
@@ -9191,6 +9278,7 @@ function _shareScore() {
 }
 
 function respawn() {
+  _xpBarAnimationId++;
   _isDying = false; // allow die() to fire again on next life
   document.getElementById('death-overlay').classList.remove('show');
   _lastDamager = null;
@@ -15847,11 +15935,23 @@ function initMultiplayer() {
   // If seq matches, position was accepted. If server position diverges significantly,
   // snap-correct to server position (prevents long-term desync from lag/packet loss).
   let _lastHpSeq = 0;
+  let _lastHpAt = 0;
+
+  function _acceptAuthoritativeHp(s) {
+    if (!s || typeof s.hp !== 'number') return false;
+    const hpSeq = typeof s.hpSeq === 'number' ? s.hpSeq : null;
+    const hpAt = typeof s.hpAt === 'number' ? s.hpAt : null;
+    if (hpSeq !== null && hpSeq < _lastHpSeq) return false;
+    if (hpSeq === null && hpAt !== null && hpAt < _lastHpAt) return false;
+    if (hpSeq !== null && hpSeq === _lastHpSeq && hpAt !== null && hpAt < _lastHpAt) return false;
+    if (hpSeq !== null) _lastHpSeq = hpSeq;
+    if (hpAt !== null) _lastHpAt = Math.max(_lastHpAt, hpAt);
+    return true;
+  }
 
   _socket.on('player_take_damage', (s) => {
     if (!s || s.id !== _mySocketId || typeof s.hp !== 'number') return;
-    if (typeof s.hpSeq === 'number' && s.hpSeq <= _lastHpSeq) return;
-    if (typeof s.hpSeq === 'number') _lastHpSeq = s.hpSeq;
+    if (!_acceptAuthoritativeHp(s)) return;
     player.hp = Math.max(0, s.hp);
     updateHpBar();
     triggerDmgFlash();
@@ -15868,15 +15968,17 @@ function initMultiplayer() {
     if (!s) return;
     // High-latency packets can arrive out of order. Never let an older
     // reconciliation packet overwrite newer HP or position state.
-    if (typeof s.seq === 'number' && s.seq < _mpLastAckedSeq && (_mpLastAckedSeq - s.seq < 500)) return;
+    const acceptsHp = _acceptAuthoritativeHp(s);
+    if (typeof s.seq === 'number' && s.seq < _mpLastAckedSeq && (_mpLastAckedSeq - s.seq < 500)) {
+      if (acceptsHp) { player.hp = Math.max(0, s.hp); updateHpBar(); }
+      return;
+    }
     // Acknowledge seq
     if (typeof s.seq === 'number') {
       _mpLastAckedSeq = s.seq;
     }
     // Server-authoritative hp/xp/kills — always accept
-    const hasFreshHp = typeof s.hpSeq === 'number' && s.hpSeq >= _lastHpSeq;
-    if (hasFreshHp) _lastHpSeq = s.hpSeq;
-    if (typeof s.hp === 'number' && (hasFreshHp || _lastHpSeq === 0)) player.hp = s.hp;
+    if (acceptsHp) player.hp = Math.max(0, s.hp);
     if (player.hp <= 0 && !_isDying) die();
     if (typeof s.sc === 'number') player.score = Math.max(player.score || 0, s.sc);
     // Gold from server if more authoritative
@@ -15892,6 +15994,7 @@ function initMultiplayer() {
         player.y += (s.y - player.y) * 0.35;
       }
     }
+    updateHpBar();
     updateUI();
   });
 
@@ -16101,17 +16204,37 @@ function initMultiplayer() {
     return true; // Never drop any active server mob
   }
 
-  function _acceptMobSequence(mob, seq) {
-    if (typeof seq !== 'number') return true;
+  const _mobVisibilityAt = new Map();
+
+  function _acceptMobSequence(mob, seq, ts) {
+    if (typeof ts === 'number' && ts < (mob._stateAt || 0)) return false;
+    if (typeof seq !== 'number') {
+      if (typeof ts === 'number') mob._stateAt = ts;
+      return true;
+    }
     if (typeof mob._stateSeq === 'number' && seq <= mob._stateSeq) return false;
     mob._stateSeq = seq;
+    if (typeof ts === 'number') mob._stateAt = ts;
     return true;
   }
 
   // ── New mob spawned after we joined — full visual data ────────────────
+  _socket.on('mob_despawn', (m) => {
+    if (!m || !m.id) return;
+    const despawnAt = Number(m.ts) || Date.now();
+    if (despawnAt < (_mobVisibilityAt.get(m.id) || 0)) return;
+    _mobVisibilityAt.set(m.id, despawnAt);
+    const idx = enemies.findIndex(en => en._netId === m.id);
+    if (idx !== -1) enemies.splice(idx, 1);
+    if (m.id === _serverBossId) _hideServerBossBar();
+  });
+
   _socket.on('mob_spawn', (m) => {
     if (!m || !m.id || !isActiveMobShape(m.shape)) return;
     const now = Date.now();
+    const spawnAt = Number(m.ts) || now;
+    if (spawnAt < (_mobVisibilityAt.get(m.id) || 0)) return;
+    _mobVisibilityAt.set(m.id, spawnAt);
     const already = enemies.find(en => en._netId === m.id);
     if (already) return;
     enemies.push({ _netId: m.id, x: m.x, y: m.y, _targetX: m.x, _targetY: m.y,
@@ -16145,7 +16268,8 @@ function initMultiplayer() {
       if (!isActiveMobShape(m.shape)) continue;
       const ex = _enemyLocalMap.get(m.id);
       if (ex) {
-        if (!_acceptMobSequence(ex, m.seq)) continue;
+        if (m.ts <= (_mobVisibilityAt.get(m.id) || 0)) continue;
+        if (!_acceptMobSequence(ex, m.seq, m.ts)) continue;
         ex._targetX = m.x; ex._targetY = m.y;
         ex.vx = m.vx||0; ex.vy = m.vy||0;
         ex.hp = m.hp;
@@ -16163,7 +16287,7 @@ function initMultiplayer() {
           eyes: m.eyes||'#ffcc66', hitFlash: m.hitFlash||0, typeName: m.typeName||'🐺 Kurt',
           dmg: m.dmg||28, speed: 0, xpReward: m.xpReward||50, goldReward: m.goldReward||20,
           provoked: true, lastHit: 0, lastBuildHit: 0, lastSpikeHit: 0, lastResHit: 0, lastHitSwingId: -1,
-          angle: m.angle||0, _stateSeq: m.seq || 0, _lastSeen: now, isBoss: m.isBoss||false });
+          angle: m.angle||0, _stateSeq: m.seq || 0, _stateAt: m.ts || now, _lastSeen: now, isBoss: m.isBoss||false });
         if (m.isBoss && !_serverBossId) {
           _serverBossId = m.id;
           _serverBossName = m.typeName || '👑 Boss';
@@ -16262,7 +16386,7 @@ function initMultiplayer() {
     if (!m || !m.id) return;
     const e = enemies.find(en => en._netId === m.id);
     if (!e) return;
-    if (!_acceptMobSequence(e, m.seq)) return;
+    if (!_acceptMobSequence(e, m.seq, m.ts)) return;
     if (typeof m.hp === 'number') {
       e.hp = m.hp;
       // Boss bar: live HP update
@@ -16353,7 +16477,7 @@ function initMultiplayer() {
   });
 
   // ── Mob attacks player (server-authoritative damage & animation) ───────
-  _socket.on('mob_attack', ({ id, targetId, dmg, hp, hpSeq, typeName, shape, isWeb, x, y, angle, targetX, targetY, seq }) => {
+  _socket.on('mob_attack', ({ id, targetId, dmg, hp, hpSeq, typeName, shape, isWeb, x, y, angle, targetX, targetY, seq, ts }) => {
     if (isWeb && id) {
       const _now = Date.now();
       const _lastWeb = _mobWebCooldowns.get(id) || 0;
@@ -16364,25 +16488,14 @@ function initMultiplayer() {
     if (id) {
       attackingMob = enemies.find(en => en._netId === id);
       if (attackingMob) {
+        if (typeof ts === 'number' && ts < (attackingMob._stateAt || 0)) return;
+        if (typeof ts === 'number') attackingMob._stateAt = ts;
         attackingMob.state = 'attack';
         attackingMob.attackTimer = 0;
         if (typeof angle === 'number') attackingMob.angle = angle;
-      } else if (typeof x === 'number' && typeof y === 'number') {
-        const defaultShape = shape || 'wolf';
-        const newMob = {
-          _netId: id, x: x, y: y, _targetX: x, _targetY: y,
-          vx: 0, vy: 0, hp: 100, maxHp: 100, radius: defaultShape === 'bear' ? 65 : (defaultShape === 'scorpion' ? 52 : 48),
-          color: defaultShape === 'spider' ? '#2a1a38' : (defaultShape === 'bear' ? '#4a2f1b' : '#6b4932'),
-          outline: '#111', shape: defaultShape, eyes: '#ff1100', hitFlash: 0,
-          typeName: typeName || (defaultShape === 'spider' ? '🕷️ Örümcek' : '🐺 Kurt'),
-          dmg: dmg || 25, speed: 0, xpReward: 80, goldReward: 35,
-          provoked: true, lastHit: 0, lastBuildHit: 0, lastSpikeHit: 0, lastResHit: 0, lastHitSwingId: -1,
-          angle: angle || 0, _stateSeq: seq || 0, _lastSeen: Date.now(), isBoss: false
-        };
-        enemies.push(newMob);
-        attackingMob = newMob;
       }
     }
+    if (id && !attackingMob) return;
     const mobShape = shape || (attackingMob ? attackingMob.shape : 'wolf');
     const ax = typeof x === 'number' ? x : (attackingMob ? attackingMob.x : player.x);
     const ay = typeof y === 'number' ? y : (attackingMob ? attackingMob.y : player.y);
@@ -16418,6 +16531,7 @@ function initMultiplayer() {
   // client randomForestPoint / _handlePvpKill server pos / respawn handler server pos
   _socket.on('own_respawn', ({ x, y }) => {
     _lastHpSeq = 0;
+    _lastHpAt = 0;
     player.x = x;
     player.y = y;
     // PERF: Immediately snap camera to respawn position so _buildGdLayer does NOT

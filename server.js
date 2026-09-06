@@ -2213,8 +2213,10 @@ io.on('connection', (socket) => {
     if ((attacker.hp ?? 250) <= 0) attacker.hp = 250;
     const weapon = Number(data.weapon) === 2 ? 2 : 1;
     const now = Date.now();
-    const swingCooldown = weapon === 2 ? 180 : 230;
+    const swingCooldown = weapon === 2 ? 900 : 700;
     if (now - (attacker.lastSwingAt || 0) < swingCooldown) return;
+    const swingId = Number.isFinite(Number(data.swingId)) ? Number(data.swingId) : null;
+    if (swingId !== null && attacker.lastSwingId === swingId) return;
     const range = weapon === 2 ? 140 : 128;
     const spread = weapon === 2 ? Math.PI / 3.25 : Math.PI / 2.57;
     const tier = Math.max(0, Math.min(5, Number(weapon === 2 ? data.swordTier : data.axeTier) || 0));
@@ -2223,6 +2225,8 @@ io.on('connection', (socket) => {
     const angle = Number(data.angle);
     if (!Number.isFinite(angle)) return;
     attacker.lastSwingAt = now;
+    attacker.lastSwingId = swingId;
+    attacker.attackUntil = now + swingCooldown;
     io.emit('player_attacked', { id: socket.id, weapon, angle, at: now });
     const attackerX = Number(attacker.x) || 0, attackerY = Number(attacker.y) || 0;
     attacker.angle = angle;

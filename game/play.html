@@ -5913,7 +5913,7 @@ const player = {
   wood: 50, stone: 30, gold: 100, apples: 5,
   hp: 250, maxHp: 250, xp: Math.max(0, Number(_storedAuthUser?.xp || 0)),
   _fruitUseUntil: 0,
-  isAttacking: false, attackTimer: 0,
+  isAttacking: false, attackHeld: false, attackTimer: 0,
   attackDuration: ATTACK_DUR[1],
   lastHitEnemyTime: 0,
   // Perk multipliers
@@ -6089,6 +6089,7 @@ invSlots.forEach((slot, index) => {
     const slotNum = index + 1;
     player.weapon = slotNum;
     player.attackDuration = ATTACK_DUR[slotNum] || 28;
+    player.attackHeld = false;
     player.isAttacking = false;
     player.attackTimer = 0;
     invSlots.forEach(s => s.classList.remove('active'));
@@ -6995,7 +6996,8 @@ function setupJoy(zoneId, stickId, isMove) {
       player.vy = _joystickMoveY;
     } else {
       player.angle = ang;
-      player.isAttacking = dist > 8;
+      player.attackHeld = dist > 8;
+      if (player.attackHeld) player.isAttacking = true;
     }
   }
 
@@ -7029,7 +7031,8 @@ function setupJoy(zoneId, stickId, isMove) {
         eatApple();
       }
       if (player.weapon >= 3 && player.isAttacking) tryPlaceBuilding();
-      player.isAttacking = false;
+      player.attackHeld = false;
+      if (player.weapon >= 3) player.isAttacking = false;
     }
   };
   zone.addEventListener('pointerup', end);
@@ -9327,7 +9330,7 @@ function respawn() {
   player.speedBonus = 1; player.dmgBonus = 1; player.harvestBonus = 1;
   player.armorBonus = 0; player.atkSpdBonus = 1; player.regenBonus = 1;
   player.vampire = false; player._wideSwing = false;
-  player.weapon = 1; player.isAttacking = false; player.attackTimer = 0;
+  player.weapon = 1; player.attackHeld = false; player.isAttacking = false; player.attackTimer = 0;
   _survivalStartTime = Date.now();
   // Only clear OWN buildings — remote buildings from other players must survive respawn.
   // The server will send a buildings_sync event with the current full state.
@@ -13341,8 +13344,14 @@ function update(timestamp = 0) {
     const _prevT = player.attackTimer;
     player.attackTimer += _dt * (1 / (player.atkSpdBonus || 1));
     if (player.attackTimer > player.attackDuration) {
-      player.attackTimer = 1; // yeni swing döngüsü hemen başlar
-      _swingId++;             // yeni swing ID → hedefler tekrar vurulabilir
+      if (player.attackHeld) {
+        player.attackTimer = 1; // yeni swing döngüsü yalnızca basılı tutuluyorsa başlar
+        _swingId++;             // yeni swing ID → hedefler tekrar vurulabilir
+      } else {
+        player.isAttacking = false;
+        player.attackTimer = 0;
+        _swingId++;
+      }
     }
     if (player.weapon < 3) {
       checkHits();
@@ -15191,6 +15200,7 @@ function _handleBuildInteraction(e) {
   _tryInitAudio();
   if (player.weapon === 10) { fireBowArrow(); return; }
   hideBuildUpgradePanel();
+  player.attackHeld = true;
   player.isAttacking = true;
 }
 
@@ -15207,16 +15217,18 @@ document.addEventListener('touchstart', _tryInitAudio, { once: true });
 canvas.addEventListener('mouseup', e => {
   if (e.button === 0) {
     if (player.weapon >= 3 && player.isAttacking) tryPlaceBuilding();
-    player.isAttacking = false;
+    player.attackHeld = false;
+    if (player.weapon >= 3) player.isAttacking = false;
   }
 });
 window.addEventListener('pointerup', e => {
   if (e.pointerType === 'mouse' && e.button !== 0) return;
   if (player.weapon >= 3 && player.isAttacking) tryPlaceBuilding();
-  player.isAttacking = false;
+  player.attackHeld = false;
+  if (player.weapon >= 3) player.isAttacking = false;
 });
-window.addEventListener('pointercancel', () => { player.isAttacking = false; });
-window.addEventListener('blur', () => { player.isAttacking = false; });
+window.addEventListener('pointercancel', () => { player.attackHeld = false; });
+window.addEventListener('blur', () => { player.attackHeld = false; });
 
 // ============================================================
 // MULTIPLAYER — WebSocket / Socket.io

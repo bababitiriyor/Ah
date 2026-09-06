@@ -205,9 +205,10 @@ function dailyQuestDayKey(timestamp = Date.now()) {
 
 function dailyRewardState(user) {
   const current = user.dailyReward && typeof user.dailyReward === 'object' ? user.dailyReward : {};
+  const day = Number(current.day);
   return {
-    day: Math.max(1, Math.min(7, Number(current.day) || 1)),
-    claimedDate: String(current.claimedDate || '')
+    day: Number.isInteger(day) ? Math.max(1, Math.min(7, day)) : 1,
+    claimedDate: /^\d{4}-\d{2}-\d{2}$/.test(String(current.claimedDate || '')) ? String(current.claimedDate) : ''
   };
 }
 
@@ -1004,7 +1005,9 @@ async function handleApi(request, response, requestPath) {
       return true;
     }
     const state = dailyRewardState(user);
+    user.dailyReward = state;
     const today = dailyQuestDayKey();
+    saveAccountData(true);
     sendJson(response, 200, {
       day: state.day,
       claimedDate: state.claimedDate,

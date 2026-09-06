@@ -3936,6 +3936,8 @@
         const DAILY_REWARD_ICONS = ['fa-seedling', 'fa-leaf', 'fa-gem', 'fa-fire', 'fa-crown', 'fa-star', 'fa-trophy'];
         let _dailyRewardServerState = null;
         let _dailyRewardServerIdentity = '';
+        let _dailyRewardLoadPromise = null;
+        let _dailyRewardClaimInFlight = false;
 
         function getDailyRewardDate() {
             return new Date().toISOString().slice(0, 10);
@@ -3968,11 +3970,13 @@
                 _dailyRewardServerIdentity = identity;
                 _dailyRewardServerState = null;
             }
-            try {
+            if (_dailyRewardLoadPromise) return _dailyRewardLoadPromise;
+            _dailyRewardLoadPromise = (async () => {
+              try {
                 const response = await fetch('/api/daily-reward', {
                     headers: { 'Authorization': 'Bearer ' + _authToken }
                 });
-                if (!response.ok) return;
+                if (!response.ok) return null;
                 const data = await response.json();
                 _dailyRewardServerState = {
                     day: data.day,
@@ -3981,7 +3985,14 @@
                 };
                 localStorage.setItem('fb_daily_reward', JSON.stringify(_dailyRewardServerState));
                 updateDailyRewardPanel();
-            } catch (error) {}
+                                return _dailyRewardServerState;
+                            } catch (error) {
+                                return null;
+                            } finally {
+                                _dailyRewardLoadPromise = null;
+                            }
+                        })();
+                        return _dailyRewardLoadPromise;
         }
 
         function updateDailyRewardPanel() {
@@ -4021,13 +4032,18 @@
                 triggerToast('Günlük ödül için önce hesabına giriş yapmalısın.', 'fa-lock');
                 return;
             }
-            const state = getDailyRewardState();
+            if (_dailyRewardClaimInFlight) return;
+            _dailyRewardClaimInFlight = true;
+            const claimButton = document.getElementById('daily-reward-claim');
+            if (claimButton) claimButton.disabled = true;
+            await loadDailyRewardState();
+            const state = _dailyRewardServerState || getDailyRewardState();
             const today = getDailyRewardDate();
             if (state.claimedDate === today) {
                 updateDailyRewardPanel();
+                _dailyRewardClaimInFlight = false;
                 return;
             }
-            const reward = DAILY_REWARDS[Math.max(0, Math.min(6, state.day - 1))];
             try {
                 const response = await fetch('/api/daily-reward/claim', {
                     method: 'POST',
@@ -4036,26 +4052,33 @@
                 const data = await response.json();
                 if (!response.ok) {
                     if (response.status === 409) {
-                        _dailyRewardServerState = { day: data.day, claimedDate: data.claimedDate || today, claimedToday: true };
+                        _dailyRewardServerState = { day: data.day, claimedDate: data.claimedDate || today, claimedToday: Boolean(data.claimedToday) };
+                        localStorage.setItem('fb_daily_reward', JSON.stringify(_dailyRewardServerState));
                         updateDailyRewardPanel();
                     }
                     triggerToast(data.error || 'Günlük ödül alınamadı.', 'fa-triangle-exclamation');
                     return;
                 }
-                setPlayerGold(Number(data.coins) || getPlayerGold() + reward);
+                if (typeof data.coins !== 'number' || typeof data.reward !== 'number' || !data.nextDay) {
+                    throw new Error('Geçersiz günlük ödül yanıtı');
+                }
+                setPlayerGold(data.coins);
                 _dailyRewardServerState = { day: data.nextDay, claimedDate: data.claimedDate, claimedToday: true };
+                localStorage.setItem('fb_daily_reward', JSON.stringify(_dailyRewardServerState));
                 if (data.user) {
                     _currentUser = data.user;
                     _authUser = data.user;
                     localStorage.setItem('fb_auth_user', JSON.stringify(data.user));
                 }
+                updateDailyRewardPanel();
+                triggerToast(`Günlük ödül alındı: +${data.reward.toLocaleString()} altın!`, 'fa-gift');
+                playSfx('buy');
             } catch (error) {
                 triggerToast('Sunucuya ulaşılamadı; ödül verilmedi.', 'fa-triangle-exclamation');
-                return;
+            } finally {
+                _dailyRewardClaimInFlight = false;
+                updateDailyRewardPanel();
             }
-            updateDailyRewardPanel();
-            triggerToast(`Günlük ödül alındı: +${reward.toLocaleString()} altın!`, 'fa-gift');
-            playSfx('buy');
         }
 
         /* ════════════════════════════════════════════════════════════════

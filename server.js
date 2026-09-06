@@ -160,7 +160,7 @@ const ULTRA_QUESTS = [
 ];
 
 const DAILY_REWARDS = [100, 150, 220, 300, 450, 650, 1000];
-const XP_RESET_VERSION = 2;
+const XP_RESET_VERSION = 3;
 
 const CHEST_CONFIG = {
   wood_chest: { cost: 480, rewards: ['penguin', 'frog', 'croc', 'fox', 'panda', 'rabbit', 'skin_desert', 'skin_emerald', 'skin_reef', 'skin_steam', 'skin_blossom', 'robot'] },
@@ -349,25 +349,27 @@ function loadAccountData() {
     accountData = { users: {}, clans: {}, leaderboard: {}, recentDeaths: [], nextId: 1 };
   }
   if (accountData.xpResetVersion !== XP_RESET_VERSION) {
-    for (const [userKey, user] of Object.entries(accountData.users || {})) {
-      user.rankId = rankInfo(user.xp || 0).rankId;
+    for (const user of Object.values(accountData.users || {})) {
+      user.xp = 0;
+      user.rankId = 0;
+      user.claimedLevelRewards = [];
+      user.questProgress = {};
+      user.claimedQuests = [];
+      user.dailyQuests = null;
+      user.ultraQuests = null;
     }
     for (const entry of Object.values(accountData.leaderboard || {})) {
-      const xp = Math.max(0, Number(entry.xp || 0));
-      const rank = rankInfo(xp);
-      entry.xp = xp;
-      entry.rankId = rank.rankId;
-      entry.rankName = rank.name;
+      entry.xp = 0;
+      entry.rankId = 0;
+      entry.rankName = RANK_NAMES[0];
     }
     for (const entry of accountData.recentDeaths || []) {
-      const xp = Math.max(0, Number(entry.xp || 0));
-      const rank = rankInfo(xp);
-      entry.xp = xp;
-      entry.rankId = rank.rankId;
-      entry.rankName = rank.name;
+      entry.xp = 0;
+      entry.rankId = 0;
+      entry.rankName = RANK_NAMES[0];
     }
     accountData.xpResetVersion = XP_RESET_VERSION;
-    console.log(`[Database] XP preservation migration ${XP_RESET_VERSION} applied to ${Object.keys(accountData.users || {}).length} users.`);
+    console.log(`[Database] XP reset migration ${XP_RESET_VERSION} applied to ${Object.keys(accountData.users || {}).length} users.`);
   }
   writeSqliteSnapshot(accountData);
 }

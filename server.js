@@ -84,7 +84,16 @@ try {
 }
 const authSecret = process.env.AUTH_SECRET || crypto.createHash('sha256').update(`forestbrawl:${path.resolve(databaseFile)}`).digest('hex');
 if (!process.env.AUTH_SECRET) console.warn('[Security] AUTH_SECRET is not set; using a stable development secret. Set AUTH_SECRET in production.');
-const allowedOrigins = new Set((process.env.ALLOWED_ORIGINS || 'https://forestbrawl.fun,https://www.forestbrawl.fun,http://localhost:3000').split(',').map(origin => origin.trim()).filter(Boolean));
+const allowedOrigins = new Set([
+  ...(process.env.ALLOWED_ORIGINS || '').split(','),
+  'https://forestbrawl.fun',
+  'https://www.forestbrawl.fun',
+  'https://titotu.io',
+  'https://www.titotu.io',
+  'https://titotu.ru',
+  'https://www.titotu.ru',
+  'http://localhost:3000',
+].map(origin => origin.trim()).filter(Boolean));
 const worldSeed = 0x4F524553;
 let nextMobId = 1;
 const airdrops = new Map();
@@ -1164,9 +1173,9 @@ function serveStatic(request, response, requestPath) {
     response.writeHead(200, {
       'Content-Type': mime[extension] || 'application/octet-stream',
       'X-Content-Type-Options': 'nosniff',
-      'X-Frame-Options': 'SAMEORIGIN',
+      'Content-Security-Policy': "frame-ancestors 'self' https://forestbrawl.fun https://www.forestbrawl.fun https://titotu.io https://www.titotu.io https://titotu.ru https://www.titotu.ru",
       'Referrer-Policy': 'strict-origin-when-cross-origin',
-      'Cross-Origin-Resource-Policy': 'same-origin',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
       'X-DNS-Prefetch-Control': 'on',
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
       'Cache-Control': isHtmlOrCode ? 'no-cache' : isImage ? 'public, max-age=604800, immutable' : 'public, max-age=86400',

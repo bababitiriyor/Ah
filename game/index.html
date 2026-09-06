@@ -1962,70 +1962,13 @@
         }
 
         .io-games-play-row {
-            display: grid;
-            grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr);
-            gap: 8px;
             width: 100%;
             margin-bottom: 12px;
-        }
-
-        .io-games-link {
-            min-width: 0;
-            min-height: 88px;
-            padding: 10px 8px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            gap: 5px;
-            border: 4px solid #3c1e08;
-            border-radius: 14px;
-            background: linear-gradient(180deg, #f7c02d 0%, #d99316 100%);
-            box-shadow: 0 5px 0 #8b5511, inset 0 2px 0 rgba(255,255,255,.35);
-            color: #3c1e08;
-            font-family: 'Lilita One', cursive;
-            font-size: clamp(.72rem, 2.8vw, 1rem);
-            line-height: 1.05;
-            text-align: center;
-            text-decoration: none;
-            text-transform: uppercase;
-            overflow-wrap: anywhere;
-            transition: transform .1s ease, filter .1s ease;
-        }
-
-        .io-games-link:hover {
-            filter: brightness(1.08);
-            transform: translateY(-1px);
-        }
-
-        .io-games-link:active {
-            transform: translateY(4px);
-            box-shadow: 0 1px 0 #8b5511, inset 0 2px 0 rgba(255,255,255,.35);
-        }
-
-        .io-games-link i {
-            font-size: 1.15rem;
-        }
-
-        .io-games-link span {
-            max-width: 100%;
         }
 
         .io-games-play-row #play-btn {
             width: 100%;
             min-width: 0;
-        }
-
-        @media (max-width: 380px) {
-            .io-games-play-row {
-                gap: 5px;
-            }
-
-            .io-games-link {
-                min-height: 78px;
-                padding-inline: 4px;
-                font-size: .66rem;
-            }
         }
 
         @media (min-width: 901px) {
@@ -2290,10 +2233,6 @@
 
         <!-- DEV 3D PLAY BUTONU -->
         <div class="io-games-play-row">
-            <a class="io-games-link" href="https://iogames.fun" target="_blank" rel="noopener noreferrer" title="More IO Games">
-                <i class="fa-solid fa-gamepad" aria-hidden="true"></i>
-                <span>Play IO Games</span>
-            </a>
             <button id="play-btn" onclick="startDirectGame()" class="btn-3d btn-play h-[88px] sm:h-[100px] relative group overflow-hidden">
                 <span id="play-btn-text" class="font-io text-[2.8rem] sm:text-[3.5rem] tracking-widest text-white z-10 group-hover:scale-105 transition-transform">Play</span>
                 <i class="fa-solid fa-khanda absolute left-6 text-5xl text-white/20 transform -rotate-45 pointer-events-none"></i>

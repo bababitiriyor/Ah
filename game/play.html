@@ -11026,14 +11026,8 @@ function updateAndDrawMobAttackEffects(ctx) {
       player._webRootTimer = 90; // 90 frames = 1.5 seconds rooted
       player.vx = 0; player.vy = 0;
       player.momX = 0; player.momY = 0;
-      const webDmg = wp.dmg || 16;
-      player.hp = Math.max(0, player.hp - webDmg);
-      updateHpBar();
-      triggerDmgFlash();
-      shake(10);
-      floatingTexts.push({ x: player.x, y: player.y - 65, text: `🕸️ -${webDmg} HP  AĞA YAKALANDIN! (1.5s)`, alpha: 1, life: 65, color: '#ffffff', big: true });
+      floatingTexts.push({ x: player.x, y: player.y - 65, text: '🕸️ AĞA YAKALANDIN! (1.5s)', alpha: 1, life: 65, color: '#ffffff', big: true });
       playSound(140, 0.2, 'sawtooth', 0.4);
-      if (player.hp <= 0 && !_isDying) die();
     }
     if (wp.life <= 0 || !wp.active) _mobWebProjectiles.splice(i, 1);
   }
@@ -15318,7 +15312,7 @@ function initMultiplayer() {
           eyes: m.eyes||'#ffee00', hitFlash: m.hitFlash||0, typeName: m.typeName||'Düşman',
           dmg: m.dmg||10, speed: 0, xpReward: m.xpReward||25, goldReward: m.goldReward||5,
           provoked: true, lastHit: 0, lastBuildHit: 0, lastSpikeHit: 0, lastResHit: 0, lastHitSwingId: -1,
-          angle: 0, isBoss: m.isBoss||false });
+          angle: 0, _stateSeq: m.seq || 0, isBoss: m.isBoss||false });
         if (m.isBoss && !_serverBossId) {
           _serverBossId = m.id;
           _serverBossName = m.typeName || '👑 Boss';
@@ -15392,6 +15386,16 @@ function initMultiplayer() {
         if (s.clanTag !== undefined) existing.clanTag    = s.clanTag;
         if (s.acc  !== undefined) existing.acc         = s.acc;
         if (s.profileCosmetics !== undefined) existing.profileCosmetics = s.profileCosmetics;
+        if (s.trappedBy !== undefined) {
+          existing._trappedBy = s.trappedBy;
+          if (s.trappedBy) {
+            existing._trappedX = Number.isFinite(Number(s.trappedX)) ? Number(s.trappedX) : existing._trappedX;
+            existing._trappedY = Number.isFinite(Number(s.trappedY)) ? Number(s.trappedY) : existing._trappedY;
+          } else {
+            existing._trappedX = undefined;
+            existing._trappedY = undefined;
+          }
+        }
         // Build preview position (null when not in build mode)
         existing.buildX = (typeof s.bx === 'number') ? s.bx : null;
         existing.buildY = (typeof s.by === 'number') ? s.by : null;
@@ -15408,6 +15412,9 @@ function initMultiplayer() {
           buildY: (typeof s.by === 'number') ? s.by : null,
           _targetX: sx, _targetY: sy, _targetAngle: sa, vx: svx, vy: svy, _lastPacketTime: now,
           _sx: sx, _sy: sy,
+          _trappedBy: s.trappedBy || null,
+          _trappedX: Number.isFinite(Number(s.trappedX)) ? Number(s.trappedX) : sx,
+          _trappedY: Number.isFinite(Number(s.trappedY)) ? Number(s.trappedY) : sy,
           _snapshots: [{ t: now, x: sx, y: sy, a: sa, vx: svx, vy: svy }],
           _netSeq: typeof s.sq === 'number' ? s.sq : 0,
         };
@@ -15839,6 +15846,24 @@ function initMultiplayer() {
   // ⑤ CSP Reconciliation: server echoes our own state + seq back via self_state.
   // If seq matches, position was accepted. If server position diverges significantly,
   // snap-correct to server position (prevents long-term desync from lag/packet loss).
+  let _lastHpSeq = 0;
+
+  _socket.on('player_take_damage', (s) => {
+    if (!s || s.id !== _mySocketId || typeof s.hp !== 'number') return;
+    if (typeof s.hpSeq === 'number' && s.hpSeq <= _lastHpSeq) return;
+    if (typeof s.hpSeq === 'number') _lastHpSeq = s.hpSeq;
+    player.hp = Math.max(0, s.hp);
+    updateHpBar();
+    triggerDmgFlash();
+    shake(s.isWeb ? 10 : 12);
+    spawnBlood(player.x, player.y, s.isWeb ? 5 : 8);
+    const damageSource = s.sourceName || 'Düşman';
+    _lastDamager = { typeName: damageSource };
+    floatingTexts.push({ x: player.x, y: player.y - 50, text: `-${s.dmg || 0} HP (${damageSource})`, alpha: 1, life: 45, color: '#ff3333', big: true });
+    playSound(95 + Math.floor(Math.random() * 40), 0.16, 'sawtooth', 0.35);
+    if (player.hp <= 0 && !_isDying) die();
+  });
+
   _socket.on('self_state', (s) => {
     if (!s) return;
     // High-latency packets can arrive out of order. Never let an older
@@ -15849,7 +15874,9 @@ function initMultiplayer() {
       _mpLastAckedSeq = s.seq;
     }
     // Server-authoritative hp/xp/kills — always accept
-    if (typeof s.hp === 'number') player.hp = s.hp;
+    const hasFreshHp = typeof s.hpSeq === 'number' && s.hpSeq >= _lastHpSeq;
+    if (hasFreshHp) _lastHpSeq = s.hpSeq;
+    if (typeof s.hp === 'number' && (hasFreshHp || _lastHpSeq === 0)) player.hp = s.hp;
     if (player.hp <= 0 && !_isDying) die();
     if (typeof s.sc === 'number') player.score = Math.max(player.score || 0, s.sc);
     // Gold from server if more authoritative
@@ -16074,6 +16101,13 @@ function initMultiplayer() {
     return true; // Never drop any active server mob
   }
 
+  function _acceptMobSequence(mob, seq) {
+    if (typeof seq !== 'number') return true;
+    if (typeof mob._stateSeq === 'number' && seq <= mob._stateSeq) return false;
+    mob._stateSeq = seq;
+    return true;
+  }
+
   // ── New mob spawned after we joined — full visual data ────────────────
   _socket.on('mob_spawn', (m) => {
     if (!m || !m.id || !isActiveMobShape(m.shape)) return;
@@ -16088,7 +16122,7 @@ function initMultiplayer() {
       hitFlash: 0, typeName: m.typeName||'Düşman',
       dmg: m.dmg||10, speed: 0, xpReward: m.xpReward||25, goldReward: m.goldReward||5,
       provoked: true, lastHit: 0, lastBuildHit: 0, lastSpikeHit: 0, lastResHit: 0, lastHitSwingId: -1,
-      angle: 0, _lastSeen: now, isBoss: m.isBoss||false });
+      angle: 0, _stateSeq: m.seq || 0, _lastSeen: now, isBoss: m.isBoss||false });
     // Boss bar: show when a server boss mob spawns
     if (m.isBoss && !_serverBossId) {
       _serverBossId = m.id;
@@ -16111,6 +16145,7 @@ function initMultiplayer() {
       if (!isActiveMobShape(m.shape)) continue;
       const ex = _enemyLocalMap.get(m.id);
       if (ex) {
+        if (!_acceptMobSequence(ex, m.seq)) continue;
         ex._targetX = m.x; ex._targetY = m.y;
         ex.vx = m.vx||0; ex.vy = m.vy||0;
         ex.hp = m.hp;
@@ -16128,7 +16163,7 @@ function initMultiplayer() {
           eyes: m.eyes||'#ffcc66', hitFlash: m.hitFlash||0, typeName: m.typeName||'🐺 Kurt',
           dmg: m.dmg||28, speed: 0, xpReward: m.xpReward||50, goldReward: m.goldReward||20,
           provoked: true, lastHit: 0, lastBuildHit: 0, lastSpikeHit: 0, lastResHit: 0, lastHitSwingId: -1,
-          angle: m.angle||0, _lastSeen: now, isBoss: m.isBoss||false });
+          angle: m.angle||0, _stateSeq: m.seq || 0, _lastSeen: now, isBoss: m.isBoss||false });
         if (m.isBoss && !_serverBossId) {
           _serverBossId = m.id;
           _serverBossName = m.typeName || '👑 Boss';
@@ -16227,6 +16262,7 @@ function initMultiplayer() {
     if (!m || !m.id) return;
     const e = enemies.find(en => en._netId === m.id);
     if (!e) return;
+    if (!_acceptMobSequence(e, m.seq)) return;
     if (typeof m.hp === 'number') {
       e.hp = m.hp;
       // Boss bar: live HP update
@@ -16317,7 +16353,7 @@ function initMultiplayer() {
   });
 
   // ── Mob attacks player (server-authoritative damage & animation) ───────
-  _socket.on('mob_attack', ({ id, targetId, dmg, hp, typeName, shape, isWeb, x, y, angle, targetX, targetY }) => {
+  _socket.on('mob_attack', ({ id, targetId, dmg, hp, hpSeq, typeName, shape, isWeb, x, y, angle, targetX, targetY, seq }) => {
     if (isWeb && id) {
       const _now = Date.now();
       const _lastWeb = _mobWebCooldowns.get(id) || 0;
@@ -16341,7 +16377,7 @@ function initMultiplayer() {
           typeName: typeName || (defaultShape === 'spider' ? '🕷️ Örümcek' : '🐺 Kurt'),
           dmg: dmg || 25, speed: 0, xpReward: 80, goldReward: 35,
           provoked: true, lastHit: 0, lastBuildHit: 0, lastSpikeHit: 0, lastResHit: 0, lastHitSwingId: -1,
-          angle: angle || 0, _lastSeen: Date.now(), isBoss: false
+          angle: angle || 0, _stateSeq: seq || 0, _lastSeen: Date.now(), isBoss: false
         };
         enemies.push(newMob);
         attackingMob = newMob;
@@ -16357,7 +16393,10 @@ function initMultiplayer() {
     if (targetId && _mySocketId && targetId !== _mySocketId) {
       const tgt = _otherPlayers.get(targetId);
       if (tgt) {
-        tgt.hp = Math.max(0, typeof hp === 'number' ? hp : tgt.hp - dmg);
+        if (typeof hp === 'number' && (typeof hpSeq !== 'number' || hpSeq > (tgt._hpSeq || 0))) {
+          tgt.hp = Math.max(0, hp);
+          if (typeof hpSeq === 'number') tgt._hpSeq = hpSeq;
+        }
         spawnBlood(tgt.x, tgt.y, 6);
         floatingTexts.push({ x: tgt.x, y: tgt.y - 40, text: `-${dmg} HP`, alpha: 1, life: 35, color: '#ff3333' });
       }
@@ -16365,26 +16404,12 @@ function initMultiplayer() {
     }
     if (_isDying || _spawnProtected) return;
     if (isWeb) {
-      // Spider web projectile is in flight — damage & 1.5s root are applied on projectile contact!
+      // The server already applied HP damage; the projectile only supplies the root visual.
       return;
     }
     // Prevent phantom damage: verify attacking mob coordinates are within range of player
     const mobDist = Math.hypot(player.x - ax, player.y - ay);
     if (mobDist > 220) return; // ignore stale/desynced phantom attack
-    const _prevHp = player.hp;
-    const directDmg = Math.max(1, Math.round(dmg * (1 - (player.armorBonus || 0))));
-    player.hp = Math.max(0, typeof hp === 'number' ? hp : player.hp - directDmg);
-    shake(12);
-    spawnBlood(player.x, player.y, 8);
-    triggerDmgFlash();
-    const _actualDmg = Math.round(_prevHp - player.hp);
-    const _showDmg = _actualDmg > 0 ? _actualDmg : directDmg;
-    const _sourceName = typeName || (mobShape === 'bear' ? '🐻 Ayı' : (mobShape === 'scorpion' ? '🦂 Akrep' : (mobShape === 'spider' ? '🕷️ Örümcek' : '🐺 Kurt')));
-    floatingTexts.push({ x: player.x, y: player.y - 50, text: `-${_showDmg} HP (${_sourceName})`, alpha: 1, life: 45, color: '#ff3333', big: true });
-    if (typeName) _lastDamager = { typeName: _sourceName };
-    playSound(95 + Math.floor(Math.random()*40), 0.16, 'sawtooth', 0.35);
-    updateHpBar();
-    if (player.hp <= 0 && !_isDying) die();
   });
 
   // ── Another player respawned — add back to render map ───────────────
@@ -16392,6 +16417,7 @@ function initMultiplayer() {
   // This is the single source of truth — avoids 3-way race between:
   // client randomForestPoint / _handlePvpKill server pos / respawn handler server pos
   _socket.on('own_respawn', ({ x, y }) => {
+    _lastHpSeq = 0;
     player.x = x;
     player.y = y;
     // PERF: Immediately snap camera to respawn position so _buildGdLayer does NOT

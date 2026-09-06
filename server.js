@@ -1208,6 +1208,7 @@ function compactFullState(state) {
 function compactMobTick(mob) {
   return {
     id: mob.id,
+    seq: mob.stateSeq || 0,
     x: Math.round(mob.x),
     y: Math.round(mob.y),
     vx: Math.round((mob.vx || 0) * 10) / 10,
@@ -1323,6 +1324,7 @@ function publicMob(mob) {
   return {
     id: mob.id, x: Math.round(mob.x), y: Math.round(mob.y), vx: Math.round(mob.vx * 10) / 10,
     vy: Math.round(mob.vy * 10) / 10, angle: mob.angle !== undefined ? Math.round(mob.angle * 100) / 100 : 0,
+    seq: mob.stateSeq || 0,
     hp: mob.hp, maxHp: mob.maxHp, radius: mob.radius,
     color: mob.color, outline: mob.outline, shape: mob.shape, eyes: mob.eyes,
     typeName: mob.typeName, dmg: mob.dmg, xpReward: mob.xpReward, goldReward: mob.goldReward,
@@ -1395,7 +1397,7 @@ function createMob() {
     eyes: type.eyes, typeName: type.typeName, dmg: type.dmg,
     speed: type.speed || MOB_SPEED, wanderSpeed: type.wanderSpeed || MOB_WANDER_SPEED,
     xpReward: type.xpReward || 35, goldReward: type.goldReward || 15,
-    nextAttackAt: 0, wanderAngle: angle, angle, targetId: null, chaseUntil: 0, state: 'walk',
+    nextAttackAt: 0, wanderAngle: angle, angle, targetId: null, chaseUntil: 0, state: 'walk', stateSeq: 0,
   };
   mobs.set(mob.id, mob);
   io.emit('mob_spawn', publicMob(mob));
@@ -1404,6 +1406,20 @@ function createMob() {
 
 function ensureMobs() {
   while (mobs.size < MAX_MOBS) createMob();
+}
+
+function applyMobDamage(mob, target, damage, isWeb = false) {
+  if (!mob || !target || target.hp <= 0) return null;
+  const appliedDamage = Math.max(1, Math.round(Number(damage) || 1));
+  target.hp = Math.max(0, (target.hp ?? 250) - appliedDamage);
+  target.hpSeq = (target.hpSeq || 0) + 1;
+  const payload = {
+    id: target.id, hp: target.hp, dmg: appliedDamage, hpSeq: target.hpSeq,
+    sourceId: mob.id, sourceName: mob.typeName || 'Düşman', isWeb: Boolean(isWeb),
+  };
+  io.to(target.id).emit('player_take_damage', payload);
+  io.to(target.id).emit('self_state', { hp: target.hp, hpSeq: target.hpSeq });
+  return payload;
 }
 
 function publicAirdrop(ad) {
@@ -1442,11 +1458,18 @@ function updateBounty() {
   }
 }
 
+function releaseTrapVictims(trapId) {
+  for (const player of players.values()) {
+    if (player.trappedBy === trapId) releaseTrapVictim(player.id, trapId);
+  }
+}
+
 function deletePlayerBuildings(playerId) {
   if (!playerId) return;
   const deletedIds = [];
   for (const [id, b] of buildings) {
     if (b.ownerId === playerId || b._ownerId === playerId) {
+      if (Number(b.type) === 6) releaseTrapVictims(id);
       buildings.delete(id);
       deletedIds.push(id);
     }
@@ -1455,18 +1478,6 @@ function deletePlayerBuildings(playerId) {
     for (const id of deletedIds) {
       io.emit('build_destroy', { id });
       io.emit('trap_freed', { buildingId: id });
-    }
-    for (const p of players.values()) {
-      if (p.trappedBy && deletedIds.includes(p.trappedBy)) {
-        const trapId = p.trappedBy;
-        p.trappedBy = null;
-        p.trappedX = null;
-        p.trappedY = null;
-        p.trappedUntil = 0;
-        p.vx = 0;
-        p.vy = 0;
-        io.to(p.id).emit('trap_freed', { buildingId: trapId });
-      }
     }
   }
 }
@@ -1481,7 +1492,6 @@ function releaseTrapVictim(playerId, trapId = null) {
   target.trappedBy = null;
   target.trappedX = null;
   target.trappedY = null;
-  target.trappedUntil = 0;
   target.vx = 0;
   target.vy = 0;
   io.to(playerId).emit('trap_freed', { buildingId: activeTrapId });
@@ -1504,7 +1514,6 @@ function capturePlayerInTrap(target) {
     target.trappedBy = building.id;
     target.trappedX = target.x;
     target.trappedY = target.y;
-    target.trappedUntil = Date.now() + 4000;
     target.vx = 0;
     target.vy = 0;
     io.to(target.id).emit('trap_caught', { buildingId: building.id, x: target.x, y: target.y });
@@ -1517,7 +1526,7 @@ function capturePlayerInTrap(target) {
 function pushTrappedVictim(owner, target, dx, dy, requestedStep = 1) {
   if (!owner || !target || !target.trappedBy || target.hp <= 0) return false;
   const trap = buildings.get(target.trappedBy);
-  if (!trap || trap.ownerId !== owner.id || (trap.hp ?? 0) <= 0 || Date.now() >= (target.trappedUntil || 0)) return false;
+  if (!trap || trap.ownerId !== owner.id || (trap.hp ?? 0) <= 0) return false;
   const length = Math.hypot(dx, dy) || 1;
   const cooldownKey = `${owner.id}:${target.id}`;
   const now = Date.now();
@@ -1528,12 +1537,16 @@ function pushTrappedVictim(owner, target, dx, dy, requestedStep = 1) {
   const pushY = (dy / length) * step;
   target.trappedX += pushX;
   target.trappedY += pushY;
+  const maxDistance = (Number(trap.radius) || 78) + 44;
+  const trapDx = target.trappedX - (Number(trap.x) || 0);
+  const trapDy = target.trappedY - (Number(trap.y) || 0);
+  const trapDistance = Math.hypot(trapDx, trapDy);
+  if (trapDistance > maxDistance) {
+    target.trappedX = (Number(trap.x) || 0) + (trapDx / (trapDistance || 1)) * maxDistance;
+    target.trappedY = (Number(trap.y) || 0) + (trapDy / (trapDistance || 1)) * maxDistance;
+  }
   target.x = target.trappedX;
   target.y = target.trappedY;
-  if (Math.hypot(target.x - trap.x, target.y - trap.y) > (Number(trap.radius) || 78) + 44) {
-    releaseTrapVictim(target.id, trap.id);
-    return false;
-  }
   io.to(target.id).emit('trap_victim_push', { dx: pushX, dy: pushY });
   io.emit('players', { [target.id]: compactState(target) });
   return true;
@@ -1570,6 +1583,7 @@ setInterval(() => {
   const changed = [];
   const now = Date.now();
   for (const mob of mobs.values()) {
+    mob.stateSeq = (mob.stateSeq || 0) + 1;
     if (mob.trappedBy) {
       const b = buildings.get(mob.trappedBy);
       if (b && (b.hp ?? 100) > 0 && now < (mob.trappedUntil || 0)) {
@@ -1619,22 +1633,23 @@ setInterval(() => {
         mob.chaseUntil = now + MOB_CHASE_TIMEOUT;
         mob.state = 'attack';
         const webDmg = 16;
+        const webDamage = applyMobDamage(mob, target, webDmg, true);
         io.emit('mob_attack', {
-          id: mob.id, targetId: target.id, dmg: webDmg,
+          id: mob.id, targetId: target.id, dmg: webDmg, hp: webDamage?.hp, hpSeq: webDamage?.hpSeq,
           typeName: mob.typeName, shape: mob.shape, isWeb: true,
-          x: mob.x, y: mob.y, angle: mob.angle, targetX: target.x, targetY: target.y
+          x: mob.x, y: mob.y, angle: mob.angle, targetX: target.x, targetY: target.y, seq: mob.stateSeq
         });
       }
       // Melee attack for all mobs
       else if (distance < (mob.radius + 60) && now >= (mob.nextAttackAt || 0) && (now - (target.stateAt || 0) < 600)) {
-        target.hp = Math.max(0, (target.hp ?? 250) - mob.dmg);
+        const meleeDamage = applyMobDamage(mob, target, mob.dmg);
         mob.nextAttackAt = now + 1600;
         mob.chaseUntil = now + MOB_CHASE_TIMEOUT;
         mob.state = 'attack';
         io.emit('mob_attack', {
-          id: mob.id, targetId: target.id, dmg: mob.dmg, hp: target.hp,
+          id: mob.id, targetId: target.id, dmg: mob.dmg, hp: meleeDamage?.hp, hpSeq: meleeDamage?.hpSeq,
           typeName: mob.typeName, shape: mob.shape,
-          x: mob.x, y: mob.y, angle: mob.angle, targetX: target.x, targetY: target.y
+          x: mob.x, y: mob.y, angle: mob.angle, targetX: target.x, targetY: target.y, seq: mob.stateSeq
         });
         io.emit('players', { [target.id]: compactState(target) });
         if (target.hp <= 0) {
@@ -1708,7 +1723,8 @@ setInterval(() => {
           const spikeTier = b.tier || 0;
           const spikeDmg = [45, 75, 110, 160, 220, 300][spikeTier] || 45;
           mob.hp = Math.max(0, mob.hp - spikeDmg);
-          io.emit('mob_update', { id: mob.id, hp: mob.hp, maxHp: mob.maxHp, hitFlash: 8 });
+          mob.stateSeq = (mob.stateSeq || 0) + 1;
+          io.emit('mob_update', { id: mob.id, seq: mob.stateSeq, hp: mob.hp, maxHp: mob.maxHp, hitFlash: 8 });
           if (mob.hp <= 0) {
             mobs.delete(mob.id);
             const ownerId = b.ownerId || b._ownerId;
@@ -1756,23 +1772,12 @@ setInterval(() => {
     if (!p || (p.hp ?? 0) <= 0) continue;
     const s = io.sockets.sockets.get(id);
     if (s && s.connected) {
-      s.emit('self_state', { x: p.x, y: p.y, hp: p.hp, sc: p.score, g: p.gold, seq: p.stateSeq || 0 });
+      s.emit('self_state', { x: p.x, y: p.y, hp: p.hp, hpSeq: p.hpSeq || 0, sc: p.score, g: p.gold, seq: p.stateSeq || 0 });
     }
   }
 }, 1000);
 
 setInterval(broadcastMobIds, 2000);
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [playerId, player] of players) {
-    if (!player || !player.trappedBy) continue;
-    const trap = buildings.get(player.trappedBy);
-    if (!trap || (trap.hp ?? 0) <= 0 || now >= (player.trappedUntil || 0)) {
-      releaseTrapVictim(playerId, player.trappedBy);
-    }
-  }
-}, 250);
 
 // Realtime leaderboard & bounty updates every 2s
 setInterval(() => {
@@ -1935,6 +1940,7 @@ io.on('connection', (socket) => {
         vy: 0,
         angle: 0,
         stateSeq: 0,
+        hpSeq: 0,
         stateAt: Date.now()
       };
       players.set(socket.id, player);
@@ -1950,10 +1956,11 @@ io.on('connection', (socket) => {
       player.gold = 0;
       player.trappedBy = null;
       player.stateSeq = 0;
+      player.hpSeq = 0;
       player.stateAt = Date.now();
     }
     socket.emit('own_respawn', { x: spawnPt.x, y: spawnPt.y });
-    socket.emit('self_state', { x: spawnPt.x, y: spawnPt.y, hp: player.hp, sc: player.score, g: player.gold, seq: 0 });
+    socket.emit('self_state', { x: spawnPt.x, y: spawnPt.y, hp: player.hp, hpSeq: 0, sc: player.score, g: player.gold, seq: 0 });
     io.emit('player_respawn', { id: socket.id, state: compactFullState(player) });
     broadcastOnlineCount();
   });
@@ -1999,7 +2006,7 @@ io.on('connection', (socket) => {
 
     if (player.trappedBy) {
       const b = buildings.get(player.trappedBy);
-      if (b && (b.hp ?? 100) > 0 && Date.now() < (player.trappedUntil || 0)) {
+      if (b && (b.hp ?? 100) > 0) {
         data.vx = 0;
         data.vy = 0;
         data.x = player.trappedX ?? data.x;
@@ -2010,7 +2017,6 @@ io.on('connection', (socket) => {
         player.trappedBy = null;
         player.trappedX = null;
         player.trappedY = null;
-        player.trappedUntil = 0;
       }
     }
     for (const key of ['x', 'y', 'angle', 'vx', 'vy', 'isAttacking', 'attackTimer', 'attackDuration', 'weapon', 'axeTier', 'swordTier', 'team', 'color', 'skin', 'acc', 'buildX', 'buildY']) {
@@ -2324,7 +2330,8 @@ io.on('connection', (socket) => {
     mob.targetId = socket.id;
     mob.chaseUntil = now + MOB_CHASE_TIMEOUT;
 
-    io.emit('mob_update', { id: mob.id, hp: mob.hp, maxHp: mob.maxHp, hitFlash: 8, targetId: socket.id });
+    mob.stateSeq = (mob.stateSeq || 0) + 1;
+    io.emit('mob_update', { id: mob.id, seq: mob.stateSeq, hp: mob.hp, maxHp: mob.maxHp, hitFlash: 8, targetId: socket.id });
 
     if (mob.hp <= 0) {
       mobs.delete(mob.id);
@@ -2408,12 +2415,10 @@ io.on('connection', (socket) => {
     const isOwner = building.ownerId === socket.id;
     const isClanOwner = player?.clanId && building.ownerClanId === player.clanId && clans.get(player.clanId)?.ownerId === socket.id;
     if (!isOwner && !isClanOwner) return;
+    if (Number(building.type) === 6) releaseTrapVictims(id);
     buildings.delete(id);
     io.emit('build_destroy', { id });
     io.emit('trap_freed', { buildingId: id });
-    for (const p of players.values()) {
-      if (p.trappedBy === id) p.trappedBy = null;
-    }
   });
   socket.on('building_hit', ({ id, dmg } = {}) => {
     const building = buildings.get(id);
@@ -2422,12 +2427,10 @@ io.on('connection', (socket) => {
     building.hp = Math.max(0, (building.hp ?? building.maxHp ?? 100) - Math.max(1, Math.min(maxDamage, Number(dmg) || 1)));
     io.emit('build_hp_update', { id, hp: building.hp });
     if (building.hp <= 0) {
+      if (Number(building.type) === 6) releaseTrapVictims(id);
       buildings.delete(id);
       io.emit('build_destroy', { id });
       io.emit('trap_freed', { buildingId: id });
-      for (const p of players.values()) {
-        if (p.trappedBy === id) p.trappedBy = null;
-      }
     }
   });
   socket.on('build_hp_update', (data = {}) => {

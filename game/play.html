@@ -3221,6 +3221,7 @@ function _trackQuestProgress(key, amount = 1) {
 const _questPending = {};
 const _questPersisted = {};
 let _questSyncTimer = null;
+let _questTrackedTimeMinutes = 0;
 function _accountStatePayload() {
   const settings = {};
   ['fb_auto_eat', 'fb_build_snap', 'fb_shake', 'fb_mobile_controls', 'fb_sfx_muted', 'fb_shadows', 'fb_fps', 'fb_minimap', 'fb_grid_show'].forEach(key => {
@@ -3271,6 +3272,13 @@ function _saveGameSetting(key, value) {
 window.addEventListener('pagehide', () => { _syncGameAccountState(true); });
 window._updateQuestProgress = _trackQuestProgress;
 window._showAchPopup = function(){};
+setInterval(() => {
+  const minutes = Math.floor(globalTime / 60);
+  if (minutes > _questTrackedTimeMinutes) {
+    _trackQuestProgress('time', minutes - _questTrackedTimeMinutes);
+    _questTrackedTimeMinutes = minutes;
+  }
+}, 30000);
 
 // ── Minimap offscreen BG cache (biome zones drawn once, never re-drawn) ────
 const _mmBgCanvas = document.createElement('canvas');
@@ -6635,7 +6643,6 @@ function tryPlaceBuilding() {
     if (newB._netId) _buildingsMap.set(newB._netId, newB);
     _sgRebuildTimer = 8; // force spatial grid rebuild next frame on new building
     _trackMission('m3', 1);
-    window._updateQuestProgress('builds', 1);
     _incQuestStat('buildings', 1);
     _queueBuildMetaUpdate(1);
     _mpBuildPlaced(newB, radii[player.weapon] || 34);
@@ -7739,7 +7746,7 @@ function checkHits() {
       const _ftParts = [];
       if (yW > 0) { player.wood  += yW; _ftParts.push('+'+yW+'🪵'); _trackMission('m2', yW); window._updateQuestProgress('wood', yW); localStorage.setItem('fb_total_wood_meta', parseInt(localStorage.getItem('fb_total_wood_meta')||'0',10)+yW); }
       if (yS > 0) { player.stone += yS; _ftParts.push('+'+yS+'🪨'); window._updateQuestProgress('stone', yS); }
-      if (yG > 0) { player.gold  += yG; _ftParts.push('+'+yG+'💰'); }
+      if (yG > 0) { player.gold  += yG; _ftParts.push('+'+yG+'💰'); window._updateQuestProgress('gold', yG); }
       if (yA > 0 && Math.random() < yA) { player.apples++; _ftParts.push('+1🍎'); }
       if (_ftParts.length) floatingTexts.push({ x: res.x+(Math.random()-0.5)*30, y: res.y-40, text:_ftParts.join(' '), alpha:1, life:38, color:'#c8f5a0' });
       // NEW: Mushroom — heal
@@ -9088,7 +9095,10 @@ function die() {
   // Update quest progress for time survived
   {
     const _minsSurvived = Math.floor(globalTime / 60);
-    if (_minsSurvived >= 1) window._updateQuestProgress('time', _minsSurvived);
+    if (_minsSurvived > _questTrackedTimeMinutes) {
+      window._updateQuestProgress('time', _minsSurvived - _questTrackedTimeMinutes);
+      _questTrackedTimeMinutes = _minsSurvived;
+    }
   }
 
   // Rank progress bar — show immediately with session XP & lifetime progress
@@ -15605,6 +15615,7 @@ function initMultiplayer() {
   // PvP: we killed someone — remove dead player immediately from render
   _socket.on('pvp_kill_confirm', ({ targetName, targetId }) => {
     player.kills++;
+    _incQuestStat('kills', 1);
     player.score = (player.score || 0) + 150;
     _killCamTimer = 55;
     updateUI(); updateXP();
@@ -16459,7 +16470,8 @@ function initMultiplayer() {
   });
 
   // ── Mob died — remove immediately, don't wait for next bulk tick ─────
-  _socket.on('mob_dead', ({ id }) => {
+  _socket.on('mob_dead', ({ id, killerId }) => {
+    if (killerId !== _mySocketId) return;
     const idx = enemies.findIndex(en => en._netId === id);
     if (idx !== -1) {
       const e = enemies[idx];

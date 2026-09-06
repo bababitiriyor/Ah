@@ -260,14 +260,23 @@ function ensureUltraQuests(user) {
 }
 
 function applyDailyQuestProgress(user, deltas = {}) {
+  const normalizedDeltas = {};
+  for (const [key, rawValue] of Object.entries(deltas || {})) {
+    const delta = Math.min(1000000, Math.max(0, Number(rawValue) || 0));
+    if (delta > 0) normalizedDeltas[key] = delta;
+  }
+  user.questProgress = { ...(user.questProgress || {}) };
+  for (const [key, delta] of Object.entries(normalizedDeltas)) {
+    user.questProgress[key] = Math.max(0, Number(user.questProgress[key]) || 0) + delta;
+  }
   const daily = ensureDailyQuests(user, usernameKey(user.username));
   for (const task of daily.tasks) {
-    const delta = Math.max(0, Number(deltas[task.key]) || 0);
+    const delta = normalizedDeltas[task.key] || 0;
     if (delta > 0) task.progress = Math.min(task.target, Number(task.progress || 0) + delta);
   }
   const ultra = ensureUltraQuests(user);
   for (const task of ultra.tasks) {
-    const delta = Math.max(0, Number(deltas[task.key]) || 0);
+    const delta = normalizedDeltas[task.key] || 0;
     if (delta > 0) task.progress = Math.min(task.target, Number(task.progress || 0) + delta);
   }
   return daily;
